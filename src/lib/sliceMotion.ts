@@ -3,12 +3,12 @@ export type SliceTransform = {
   x: number;
   y: number;
   z: number;
-  rotationY: number;
+  rotationZ: number;
 };
 
 export type SliceVisualState = {
-  imageOpacity: number;
-  glassOpacity: number;
+  tissueIntensity: number;
+  sssScale: number;
   edgeOpacity: number;
 };
 
@@ -18,9 +18,9 @@ export function createSliceLayout(count: number, spacing: number): SliceTransfor
   return Array.from({ length: count }, (_, index) => ({
     index,
     x: (index - center) * spacing * 0.38,
-    y: 0,
-    z: (index - center) * spacing,
-    rotationY: -0.08
+    y: (index - center) * spacing,
+    z: 0,
+    rotationZ: -0.08
   }));
 }
 
@@ -32,14 +32,13 @@ export function getSliceTarget(base: SliceTransform, active: boolean): SliceTran
   return {
     ...base,
     x: base.x + 0.78,
-    y: base.y + 0.18,
     z: base.z + 2.25,
-    rotationY: base.rotationY - 0.025
+    rotationZ: base.rotationZ - 0.025
   };
 }
 
 export function getSliceVisualState(active: boolean): SliceVisualState {
   return active
-    ? { imageOpacity: 0.86, glassOpacity: 0.66, edgeOpacity: 0.8 }
-    : { imageOpacity: 0.24, glassOpacity: 0.44, edgeOpacity: 0.52 };
+    ? { tissueIntensity: 1, sssScale: 1, edgeOpacity: 0.78 }
+    : { tissueIntensity: 0.72, sssScale: 0.62, edgeOpacity: 0.38 };
 }
