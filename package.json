@@ -2,25 +2,31 @@
   "name": "lumen-medical-slice-atlas",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build && node scripts/prepare-sites-output.mjs",
-    "start": "next start",
+    "dev": "vinext dev",
+    "build": "vinext build && node scripts/prepare-sites-output.mjs",
+    "start": "vinext start",
     "test": "vitest run"
   },
   "dependencies": {
     "@kitware/vtk.js": "^34.7.0",
-    "next": "^15.4.2",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
+    "next": "^16.2.10",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "three": "^0.178.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@types/three": "^0.178.1",
+    "@vitejs/plugin-react": "^6.0.0",
+    "@vitejs/plugin-rsc": "^0.5.28",
+    "react-server-dom-webpack": "^19.2.6",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
+    "vinext": "^1.0.0-beta.2",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.10"
   }
 }

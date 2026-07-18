@@ -1,15 +1,8 @@
-import { cpSync, existsSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
-const source = resolve(process.cwd(), "out");
-const destination = resolve(process.cwd(), "dist");
+const source = resolve(process.cwd(), ".openai", "hosting.json");
+const destination = resolve(process.cwd(), "dist", ".openai", "hosting.json");
 
-if (!existsSync(source)) {
-  throw new Error(`Next.js static export was not found at ${source}`);
-}
-
-if (existsSync(destination)) {
-  rmSync(destination, { recursive: true, force: true });
-}
-
-cpSync(source, destination, { recursive: true });
+mkdirSync(dirname(destination), { recursive: true });
+copyFileSync(source, destination);
