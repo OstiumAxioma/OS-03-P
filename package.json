@@ -17,16 +17,19 @@
     "three": "^0.178.0"
   },
   "devDependencies": {
+    "@babel/preset-env": "^7.29.7",
     "@types/node": "^22.15.30",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.178.1",
     "@vitejs/plugin-react": "^6.0.0",
     "@vitejs/plugin-rsc": "^0.5.28",
+    "autoprefixer": "^10.5.4",
     "react-server-dom-webpack": "^19.2.6",
     "typescript": "^5.8.3",
     "vinext": "^1.0.0-beta.2",
     "vite": "^8.0.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wslink": "^2.5.0"
   }
 }
