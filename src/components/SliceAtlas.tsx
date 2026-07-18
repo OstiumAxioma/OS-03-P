@@ -34,6 +34,7 @@ const SLICE_BOTTOM_Y = -3.95 / 2;
 const ACES_BACKGROUND_COMPENSATION = 12;
 const GLASS_EDGE_ENVIRONMENT_GAIN = 4.2;
 const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.05;
+const TISSUE_THICKNESS_RATIO = 1.08;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -288,7 +289,7 @@ export default function SliceAtlas() {
         z: getSliceStackZ(
           initialVisibleRank >= 0 ? initialVisibleRank : sliceIndex,
           initialVisibleRank >= 0 ? initialVisibleIndices.length : slicePoolCount,
-          sliceDimensions.thickness * thicknessScaleRef.current
+          sliceDimensions.thickness * TISSUE_THICKNESS_RATIO * thicknessScaleRef.current
         )
       };
       const group = new THREE.Group() as SliceGroup;
@@ -313,10 +314,7 @@ export default function SliceAtlas() {
         opacity: 1,
         alphaTest: 0.08,
         side: THREE.FrontSide,
-        depthWrite: true,
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1
+        depthWrite: true
       });
       tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
       tissueMaterial.thicknessDistortionNode = float(0.16);
@@ -357,7 +355,7 @@ export default function SliceAtlas() {
         const tissueGeometry = new THREE.BoxGeometry(
           sliceDimensions.width * 0.965,
           sliceDimensions.height * 0.965,
-          sliceDimensions.thickness
+          sliceDimensions.thickness * TISSUE_THICKNESS_RATIO
         );
         const tissueVolume = new THREE.Mesh(tissueGeometry, tissueMaterial);
         tissueVolume.castShadow = true;
@@ -469,19 +467,20 @@ export default function SliceAtlas() {
         const isVisible = visibleRank >= 0;
         const wasVisible = group.visible;
         const inactiveVisual = getSliceVisualState(false);
-        const scaledThickness = baseThicknesses[index] * thicknessScaleRef.current;
+        const glassScaledThickness = baseThicknesses[index] * thicknessScaleRef.current;
+        const stackThickness = glassScaledThickness * TISSUE_THICKNESS_RATIO;
 
         if (!isVisible) {
           group.visible = false;
           group.position.set(
             group.userData.base.x,
             group.userData.base.y,
-            getSliceStackZ(index, slicePoolCount, scaledThickness)
+            getSliceStackZ(index, slicePoolCount, stackThickness)
           );
           group.scale.set(1, 1, thicknessScaleRef.current);
           tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
           sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
-          glassMaterials[index].thickness = scaledThickness;
+          glassMaterials[index].thickness = glassScaledThickness;
           glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
           return;
         }
@@ -492,12 +491,12 @@ export default function SliceAtlas() {
           z: getSliceStackZ(
             visibleRank,
             currentVisibleIndices.length,
-            scaledThickness
+            stackThickness
           )
         };
         const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
-        const opticalThicknessTarget = scaledThickness * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
+        const opticalThicknessTarget = glassScaledThickness * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
         if (!wasVisible || shouldSnapVisibleLayout) {
           group.position.set(target.x, target.y, target.z);
           group.scale.set(1, 1, thicknessScaleRef.current);
