@@ -4,10 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
-import { createMedicalVolume, createSliceTextureData, selectSliceIndices, toVtkImageData } from "@/lib/medicalVolume";
+import { decodeBase64Bytes } from "@/lib/studyClient";
+import type { StudyErrorPayload, StudyKind, StudyPayload } from "@/lib/studyTypes";
 import { createSliceLayout, getSliceTarget, getSliceVisualState, type SliceTransform } from "@/lib/sliceMotion";
 
-const SLICE_COUNT = 7;
+const PLACEHOLDER_SLICE_COUNT = 7;
+
+type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
 type SliceGroup = THREE.Group & {
   userData: {
@@ -16,17 +19,102 @@ type SliceGroup = THREE.Group & {
   };
 };
 
+function createAxisLabel(text: string, position: THREE.Vector3): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 96;
+  canvas.height = 48;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#061f18";
+    context.font = "700 26px Arial";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(text, canvas.width / 2, canvas.height / 2);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.position.copy(position);
+  sprite.scale.set(0.64, 0.32, 1);
+  return sprite;
+}
+
 export default function SliceAtlas() {
   const mountRef = useRef<HTMLDivElement>(null);
-  const activeRef = useRef<number | null>(3);
-  const [activeSlice, setActiveSlice] = useState<number | null>(3);
+  const dicomInputRef = useRef<HTMLInputElement>(null);
+  const niftiInputRef = useRef<HTMLInputElement>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const activeRef = useRef<number | null>(null);
+  const [activeSlice, setActiveSlice] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
+  const [study, setStudy] = useState<StudyPayload | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadMessage, setUploadMessage] = useState("选择服务器要处理的医学影像。");
+
+  useEffect(() => () => xhrRef.current?.abort(), []);
+
+  const uploadStudy = (kind: StudyKind, selected: FileList | null) => {
+    const files = selected ? Array.from(selected) : [];
+    if (files.length === 0) return;
+
+    xhrRef.current?.abort();
+    const request = new XMLHttpRequest();
+    const formData = new FormData();
+    formData.set("kind", kind);
+    files.forEach((file) => formData.append("files", file));
+    xhrRef.current = request;
+    setUploadPhase("uploading");
+    setUploadProgress(0);
+    setUploadMessage("正在上传到处理服务器…");
+
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        setUploadProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    request.upload.onload = () => {
+      setUploadPhase("processing");
+      setUploadProgress(100);
+      setUploadMessage("服务器正在解析并生成玻璃切片纹理…");
+    };
+    request.onerror = () => {
+      setUploadPhase("error");
+      setUploadMessage("网络连接失败，影像未完成处理。");
+    };
+    request.onload = () => {
+      try {
+        const body = JSON.parse(request.responseText) as StudyPayload | StudyErrorPayload;
+        if (request.status < 200 || request.status >= 300 || "code" in body) {
+          const error = body as StudyErrorPayload;
+          setUploadPhase("error");
+          setUploadMessage(error.message || "服务器无法解析该影像。");
+          return;
+        }
+        const payload = body as StudyPayload;
+        setStudy(payload);
+        setUploadPhase("ready");
+        setUploadMessage(`已生成 ${payload.slices.length} 层纹理，原始上传文件已从临时目录删除。`);
+      } catch {
+        setUploadPhase("error");
+        setUploadMessage("服务器返回了无法识别的响应。");
+      }
+    };
+    request.open("POST", "/api/studies");
+    request.send(formData);
+  };
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount) {
-      return;
-    }
+    if (!mount) return;
+
+    setReady(false);
+    const sliceCount = study?.slices.length || PLACEHOLDER_SLICE_COUNT;
+    const initialActive = study ? Math.floor(sliceCount / 2) : null;
+    activeRef.current = initialActive;
+    setActiveSlice(initialActive);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x53ffba);
@@ -44,6 +132,7 @@ export default function SliceAtlas() {
     renderer.toneMappingExposure = 1.08;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.autoClear = false;
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
@@ -63,10 +152,33 @@ export default function SliceAtlas() {
     rimLight.position.set(8, 1, -7);
     scene.add(rimLight);
 
-    const volume = createMedicalVolume(104, 88, 56);
-    const vtkImage = toVtkImageData(volume);
-    const indices = selectSliceIndices(volume.dimensions[2], SLICE_COUNT);
-    const layout = createSliceLayout(SLICE_COUNT, 0.62);
+    const axisScene = new THREE.Scene();
+    const axisCamera = new THREE.PerspectiveCamera(34, 1, 0.1, 20);
+    axisCamera.position.copy(camera.position).normalize().multiplyScalar(4.2);
+    axisCamera.lookAt(0, 0, 0);
+    const axisColor = 0x061f18;
+    const origin = new THREE.Vector3(-0.25, -0.25, -0.25);
+    const axes: Array<[THREE.Vector3, string]> = [
+      [new THREE.Vector3(1, 0, 0), "X"],
+      [new THREE.Vector3(0, 1, 0), "Y"],
+      [new THREE.Vector3(0, 0, 1), "Z+"]
+    ];
+    axes.forEach(([direction, label]) => {
+      const arrow = new THREE.ArrowHelper(direction, origin, 1.18, axisColor, 0.2, 0.13);
+      arrow.traverse((object) => {
+        if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          materials.forEach((material) => {
+            material.depthTest = false;
+            material.depthWrite = false;
+          });
+        }
+      });
+      axisScene.add(arrow);
+      axisScene.add(createAxisLabel(label, origin.clone().add(direction.clone().multiplyScalar(1.42))));
+    });
+
+    const layout = createSliceLayout(sliceCount, 0.62);
     const panelGroups: SliceGroup[] = [];
     const glassMaterials: THREE.MeshPhysicalMaterial[] = [];
     const imageMaterials: THREE.MeshStandardMaterial[] = [];
@@ -88,12 +200,16 @@ export default function SliceAtlas() {
     ribTexture.repeat.set(1.6, 1);
     ribTexture.needsUpdate = true;
 
-    indices.forEach((volumeSlice, sliceIndex) => {
-      const textureData = createSliceTextureData(vtkImage, volumeSlice);
+    layout.forEach((base, sliceIndex) => {
+      const payload = study?.slices[sliceIndex];
+      const diffuseBytes = payload ? decodeBase64Bytes(payload.diffuseBase64) : new Uint8Array([224, 255, 244, 0]);
+      const roughnessBytes = payload ? decodeBase64Bytes(payload.roughnessBase64) : new Uint8Array([232]);
+      const textureWidth = payload?.width ?? 1;
+      const textureHeight = payload?.height ?? 1;
       const diffuseTexture = new THREE.DataTexture(
-        textureData.diffuse,
-        textureData.width,
-        textureData.height,
+        diffuseBytes,
+        textureWidth,
+        textureHeight,
         THREE.RGBAFormat,
         THREE.UnsignedByteType
       );
@@ -103,9 +219,9 @@ export default function SliceAtlas() {
       diffuseTexture.needsUpdate = true;
 
       const roughnessTexture = new THREE.DataTexture(
-        textureData.roughness,
-        textureData.width,
-        textureData.height,
+        roughnessBytes,
+        textureWidth,
+        textureHeight,
         THREE.RedFormat,
         THREE.UnsignedByteType
       );
@@ -113,8 +229,7 @@ export default function SliceAtlas() {
       roughnessTexture.magFilter = THREE.LinearFilter;
       roughnessTexture.needsUpdate = true;
 
-      const base = layout[sliceIndex];
-      const initialVisual = getSliceVisualState(sliceIndex === activeRef.current);
+      const initialVisual = getSliceVisualState(sliceIndex === initialActive);
       const group = new THREE.Group() as SliceGroup;
       group.position.set(base.x, base.y, base.z);
       group.rotation.y = base.rotationY;
@@ -149,11 +264,16 @@ export default function SliceAtlas() {
         roughness: 0.7,
         metalness: 0,
         transparent: true,
-        opacity: initialVisual.imageOpacity,
+        opacity: payload ? initialVisual.imageOpacity : 0,
         side: THREE.DoubleSide,
         depthWrite: false
       });
-      const imagePlane = new THREE.Mesh(new THREE.PlaneGeometry(4.72, 3.54), imageMaterial);
+      const availableWidth = 4.72;
+      const availableHeight = 3.54;
+      const aspect = textureWidth / textureHeight;
+      const planeWidth = aspect > availableWidth / availableHeight ? availableWidth : availableHeight * aspect;
+      const planeHeight = aspect > availableWidth / availableHeight ? availableWidth / aspect : availableHeight;
+      const imagePlane = new THREE.Mesh(new THREE.PlaneGeometry(planeWidth, planeHeight), imageMaterial);
       imagePlane.position.z = 0.018;
       imagePlane.userData.sliceIndex = sliceIndex;
       group.add(imagePlane);
@@ -209,13 +329,10 @@ export default function SliceAtlas() {
       scene.add(group);
     });
 
-    const shadowMaterial = new THREE.MeshBasicMaterial({
-      color: 0x176a57,
-      transparent: true,
-      opacity: 0.11,
-      depthWrite: false
-    });
-    const shadow = new THREE.Mesh(new THREE.CircleGeometry(4.3, 64), shadowMaterial);
+    const shadow = new THREE.Mesh(
+      new THREE.CircleGeometry(4.3, 64),
+      new THREE.MeshBasicMaterial({ color: 0x176a57, transparent: true, opacity: 0.11, depthWrite: false })
+    );
     shadow.scale.set(1.65, 0.42, 1);
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.set(0.4, -2.34, 0.1);
@@ -231,7 +348,7 @@ export default function SliceAtlas() {
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
       const hit = raycaster.intersectObjects(raycastTargets, false)[0];
-      const next = typeof hit?.object.userData.sliceIndex === "number" ? hit.object.userData.sliceIndex : null;
+      const next = study && typeof hit?.object.userData.sliceIndex === "number" ? hit.object.userData.sliceIndex : null;
 
       if (activeRef.current !== next) {
         activeRef.current = next;
@@ -247,13 +364,11 @@ export default function SliceAtlas() {
     };
 
     const selectByKeyboard = (event: KeyboardEvent) => {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-        return;
-      }
+      if (!study || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
       event.preventDefault();
       const direction = event.key === "ArrowRight" ? 1 : -1;
-      const current = activeRef.current ?? Math.floor(SLICE_COUNT / 2);
-      const next = Math.min(SLICE_COUNT - 1, Math.max(0, current + direction));
+      const current = activeRef.current ?? Math.floor(sliceCount / 2);
+      const next = Math.min(sliceCount - 1, Math.max(0, current + direction));
       activeRef.current = next;
       setActiveSlice(next);
     };
@@ -290,26 +405,39 @@ export default function SliceAtlas() {
         const isActive = activeRef.current === index;
         const target = getSliceTarget(group.userData.base, isActive);
         const visual = getSliceVisualState(isActive);
-        group.position.x = THREE.MathUtils.damp(group.position.x, target.x, damping, delta);
-        group.position.y = THREE.MathUtils.damp(
-          group.position.y,
-          target.y + (isActive && !reducedMotion ? Math.sin(elapsed * 2.2) * 0.025 : 0),
-          damping,
-          delta
-        );
+        const lateralWave = isActive && !reducedMotion ? Math.sin(elapsed * 2.2) * 0.025 : 0;
+        group.position.x = THREE.MathUtils.damp(group.position.x, target.x + lateralWave, damping, delta);
+        group.position.y = THREE.MathUtils.damp(group.position.y, target.y, damping, delta);
         group.position.z = THREE.MathUtils.damp(group.position.z, target.z, damping, delta);
         group.rotation.y = THREE.MathUtils.damp(group.rotation.y, target.rotationY, damping, delta);
         const scaleTarget = isActive ? 1.018 : 1;
         const scale = THREE.MathUtils.damp(group.scale.x, scaleTarget, damping, delta);
         group.scale.setScalar(scale);
-        imageMaterials[index].opacity = THREE.MathUtils.damp(imageMaterials[index].opacity, visual.imageOpacity, 6.4, delta);
+        imageMaterials[index].opacity = THREE.MathUtils.damp(
+          imageMaterials[index].opacity,
+          study ? visual.imageOpacity : 0,
+          6.4,
+          delta
+        );
         glassMaterials[index].opacity = THREE.MathUtils.damp(glassMaterials[index].opacity, visual.glassOpacity, 6.4, delta);
         edgeMaterials[index].opacity = THREE.MathUtils.damp(edgeMaterials[index].opacity, visual.edgeOpacity, 6.4, delta);
       });
 
       frame += 1;
       ribTexture.offset.x = frame * 0.00016;
+      const width = mount.clientWidth;
+      const height = mount.clientHeight;
+      renderer.setViewport(0, 0, width, height);
+      renderer.setScissorTest(false);
+      renderer.clear();
       renderer.render(scene, camera);
+      renderer.clearDepth();
+      const axisSize = Math.round(THREE.MathUtils.clamp(width * 0.105, 88, 116));
+      renderer.setViewport(width - axisSize - 26, 76, axisSize, axisSize);
+      renderer.setScissor(width - axisSize - 26, 76, axisSize, axisSize);
+      renderer.setScissorTest(true);
+      renderer.render(axisScene, axisCamera);
+      renderer.setScissorTest(false);
       animationFrame = window.requestAnimationFrame(render);
     };
 
@@ -323,12 +451,16 @@ export default function SliceAtlas() {
       renderer.domElement.removeEventListener("pointerdown", updatePointer);
       renderer.domElement.removeEventListener("pointerleave", clearPointer);
       mount.removeEventListener("keydown", selectByKeyboard);
-      panelGroups.forEach((group) => {
-        group.traverse((object) => {
-          if (object instanceof THREE.Mesh) {
+      [scene, axisScene].forEach((targetScene) => {
+        targetScene.traverse((object) => {
+          if (object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments) {
             object.geometry.dispose();
             const materials = Array.isArray(object.material) ? object.material : [object.material];
             materials.forEach((material) => material.dispose());
+          }
+          if (object instanceof THREE.Sprite) {
+            object.material.map?.dispose();
+            object.material.dispose();
           }
         });
       });
@@ -336,10 +468,12 @@ export default function SliceAtlas() {
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, []);
+  }, [study]);
 
+  const sliceCount = study?.slices.length || PLACEHOLDER_SLICE_COUNT;
   const displaySlice = activeSlice === null ? "—" : String(activeSlice + 1).padStart(2, "0");
-  const progress = activeSlice === null ? 50 : ((activeSlice + 1) / SLICE_COUNT) * 100;
+  const progress = activeSlice === null ? 0 : ((activeSlice + 1) / sliceCount) * 100;
+  const busy = uploadPhase === "uploading" || uploadPhase === "processing";
 
   return (
     <main className="atlas-shell">
@@ -349,18 +483,58 @@ export default function SliceAtlas() {
           <span>LUMEN</span>
         </a>
         <div className="study-meta">
-          <span>AXIAL / CT</span>
-          <span>SYNTHETIC STUDY · 2026</span>
+          <span>{study ? `${study.modality} / ${study.sourceType.toUpperCase()}` : "NO STUDY LOADED"}</span>
+          <span>{study ? `${study.dimensions.join(" × ")} · ${study.totalSlices} SLICES` : "SERVER-SIDE ITK PROCESSING"}</span>
         </div>
       </header>
 
       <section className="viewer-copy" aria-labelledby="atlas-title">
-        <p className="eyebrow">VOLUMETRIC STUDY 01</p>
+        <p className="eyebrow">VOLUMETRIC STUDY</p>
         <h1 id="atlas-title">
           Tissue,
           <br />in layers.
         </h1>
-        <p className="intro">将体数据拆成可触摸的玻璃层片。移动指针，抽出一层观察。</p>
+        <p className="intro">上传 DICOM 或 NIfTI，服务器解析后生成可抽出的玻璃层片。</p>
+        <div className="upload-panel">
+          <input
+            ref={dicomInputRef}
+            className="file-input"
+            type="file"
+            multiple
+            accept=".dcm,.dicom,.ima,.zip,application/dicom,application/zip"
+            onChange={(event) => {
+              uploadStudy("dicom", event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+          <input
+            ref={niftiInputRef}
+            className="file-input"
+            type="file"
+            accept=".nii,.nii.gz,application/gzip"
+            onChange={(event) => {
+              uploadStudy("nifti", event.currentTarget.files);
+              event.currentTarget.value = "";
+            }}
+          />
+          <div className="upload-actions">
+            <button type="button" disabled={busy} onClick={() => dicomInputRef.current?.click()}>
+              上传 DICOM
+            </button>
+            <button type="button" disabled={busy} onClick={() => niftiInputRef.current?.click()}>
+              上传 NIfTI
+            </button>
+          </div>
+          <div className={`upload-status is-${uploadPhase}`} aria-live="polite">
+            <span>{uploadMessage}</span>
+            {busy ? <span>{uploadPhase === "uploading" ? `${uploadProgress}%` : "PROCESSING"}</span> : null}
+          </div>
+          {busy ? (
+            <div className="upload-progress" aria-hidden="true">
+              <span style={{ width: `${uploadPhase === "processing" ? 100 : uploadProgress}%` }} />
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <div
@@ -369,26 +543,26 @@ export default function SliceAtlas() {
         className={`webgl-stage${ready ? " is-ready" : ""}`}
         tabIndex={0}
         role="application"
-        aria-label="三维医学切片查看器。使用鼠标悬停，或用左右方向键选择切片。"
+        aria-label="三维医学切片查看器。上传影像后使用鼠标悬停，或用左右方向键选择切片。"
       >
-        <span className="loading-label">ASSEMBLING VOLUME</span>
+        <span className="loading-label">ASSEMBLING GLASS</span>
       </div>
 
       <aside className="slice-readout" aria-live="polite">
         <span className="readout-label">ACTIVE PLANE</span>
         <span className="readout-number">{displaySlice}</span>
-        <span className="readout-total">/ {String(SLICE_COUNT).padStart(2, "0")}</span>
+        <span className="readout-total">/ {String(sliceCount).padStart(2, "0")}</span>
       </aside>
 
       <footer className="atlas-footer">
         <div className="interaction-hint">
           <span className="cursor-icon" aria-hidden="true" />
-          HOVER TO ISOLATE · ARROW KEYS TO STEP
+          {study ? "HOVER TO ISOLATE · Z+ PULL" : "UPLOAD A STUDY TO BEGIN"}
         </div>
         <div className="slice-track" aria-hidden="true">
           <span style={{ width: `${progress}%` }} />
         </div>
-        <span className="engine-label">VTK.JS × THREE.JS</span>
+        <span className="engine-label">ITK-WASM × VTK.JS × THREE.JS</span>
       </footer>
     </main>
   );

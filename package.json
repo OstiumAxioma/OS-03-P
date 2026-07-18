@@ -1,37 +1,35 @@
 {
-  "name": "lumen-medical-slice-atlas",
+  "name": "three-vtk-medical-slice-viewer",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vite build && node scripts/prepare-sites-output.mjs",
-    "start": "vinext start",
+    "dev": "next dev",
+    "build": "next build",
+    "prestart": "node scripts/prepare-standalone.mjs",
+    "start": "node .next/standalone/server.js",
     "test": "vitest run"
   },
   "dependencies": {
+    "@itk-wasm/dicom": "^7.6.4",
+    "@itk-wasm/image-io": "^1.6.1",
     "@kitware/vtk.js": "^34.7.0",
     "next": "^16.2.10",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "three": "^0.178.0"
+    "three": "^0.178.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.7",
-    "@cloudflare/vite-plugin": "^1.45.1",
     "@types/node": "^22.15.30",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.178.1",
-    "@vitejs/plugin-react": "^6.0.0",
-    "@vitejs/plugin-rsc": "^0.5.28",
+    "@types/yauzl": "^2.10.3",
     "autoprefixer": "^10.5.4",
-    "react-server-dom-webpack": "^19.2.6",
     "typescript": "^5.8.3",
-    "vinext": "^1.0.0-beta.2",
-    "vite": "^8.0.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.112.0",
     "wslink": "^2.5.0"
   }
 }

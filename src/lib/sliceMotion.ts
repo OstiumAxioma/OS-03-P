@@ -33,7 +33,7 @@ export function getSliceTarget(base: SliceTransform, active: boolean): SliceTran
     ...base,
     x: base.x + 0.78,
     y: base.y + 0.18,
-    z: base.z + 1.35,
+    z: base.z + 2.25,
     rotationY: base.rotationY - 0.025
   };
 }

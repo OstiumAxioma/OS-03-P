@@ -13,13 +13,18 @@ describe("createSliceLayout", () => {
 });
 
 describe("getSliceTarget", () => {
-  it("moves only the active slice toward the viewer", () => {
+  it("keeps the lateral motion while making world Z+ the dominant pull", () => {
     const [base] = createSliceLayout(1, 0.5);
+    const active = getSliceTarget(base, true);
+    const xTravel = active.x - base.x;
+    const zTravel = active.z - base.z;
 
     expect(getSliceTarget(base, false)).toEqual(base);
-    expect(getSliceTarget(base, true).x).toBeGreaterThan(base.x + 0.6);
-    expect(getSliceTarget(base, true).z).toBeGreaterThan(base.z + 1);
-    expect(getSliceTarget(base, true).y).toBeGreaterThan(base.y);
+    expect(xTravel).toBeGreaterThan(0.6);
+    expect(active.y).toBeGreaterThan(base.y);
+    expect(zTravel).toBeGreaterThan(2);
+    expect(zTravel).toBeGreaterThan(xTravel * 2.5);
+    expect(active.rotationY).toBeLessThan(base.rotationY);
   });
 });
 
