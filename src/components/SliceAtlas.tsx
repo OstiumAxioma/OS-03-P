@@ -32,6 +32,7 @@ import {
 
 const SLICE_BOTTOM_Y = -3.95 / 2;
 const ACES_BACKGROUND_COMPENSATION = 12;
+const GLASS_EDGE_ENVIRONMENT_GAIN = 4.2;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -323,27 +324,27 @@ export default function SliceAtlas() {
       sssScaleNodes.push(sssScaleNode);
 
       const glassMaterial = new THREE.MeshPhysicalNodeMaterial({
-        color: 0xf2fffb,
-        roughness: 0.18,
+        color: 0xffffff,
+        roughness: 0.08,
         metalness: 0,
         transmission: 1,
         thickness: sliceDimensions.thickness * thicknessScaleRef.current,
-        ior: 1.5,
+        ior: 1.52,
         attenuationColor: new THREE.Color(0xffffff),
         attenuationDistance: Number.POSITIVE_INFINITY,
-        dispersion: 0.035,
+        dispersion: 4.5,
         opacity: 1,
         transparent: true,
         clearcoat: 1,
-        clearcoatRoughness: 0.1,
-        specularIntensity: 1,
+        clearcoatRoughness: 0.035,
+        specularIntensity: 1.5,
         specularColor: new THREE.Color(0xffffff),
-        iridescence: 0.08,
-        iridescenceIOR: 1.3,
-        iridescenceThicknessRange: [120, 420],
+        iridescence: 1,
+        iridescenceIOR: 1.7,
+        iridescenceThicknessRange: [80, 920],
         side: THREE.FrontSide,
         depthWrite: false,
-        envMapIntensity: initialVisual.edgeOpacity * 2.4
+        envMapIntensity: initialVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN
       });
       glassMaterials.push(glassMaterial);
       baseThicknesses.push(sliceDimensions.thickness);
@@ -477,7 +478,7 @@ export default function SliceAtlas() {
           group.scale.set(1, 1, thicknessScaleRef.current);
           tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
           sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
-          glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * 2.4;
+          glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
           return;
         }
 
@@ -522,7 +523,7 @@ export default function SliceAtlas() {
         );
         glassMaterials[index].envMapIntensity = THREE.MathUtils.damp(
           glassMaterials[index].envMapIntensity,
-          visual.edgeOpacity * 2.4,
+          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN,
           6.4,
           delta
         );
