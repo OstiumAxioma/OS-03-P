@@ -25,7 +25,7 @@ describe("validateVolumeDimensions", () => {
 });
 
 describe("createStudyPayload", () => {
-  it("creates at most seven bounded textures from vtk image data", () => {
+  it("creates a twelve-layer bounded texture pool from vtk image data", () => {
     const imageData = toVtkImageData(createMedicalVolume(24, 20, 12));
     const payload = createStudyPayload(imageData, {
       sourceType: "nifti",
@@ -35,13 +35,25 @@ describe("createStudyPayload", () => {
 
     expect(payload.dimensions).toEqual([24, 20, 12]);
     expect(payload.intensityMapping).toBe("normalized");
-    expect(payload.slices).toHaveLength(7);
+    expect(payload.slices).toHaveLength(12);
     expect(payload.slices.every((slice) => slice.width <= 12 && slice.height <= 12)).toBe(true);
 
     const first = payload.slices[0];
     expect(Buffer.from(first.diffuseBase64, "base64")).toHaveLength(first.width * first.height * 4);
     expect(Buffer.from(first.roughnessBase64, "base64")).toHaveLength(first.width * first.height);
     expect(Buffer.from(first.thicknessBase64, "base64")).toHaveLength(first.width * first.height);
+  });
+
+  it("honors a smaller requested texture-pool size", () => {
+    const imageData = toVtkImageData(createMedicalVolume(12, 10, 9));
+    const payload = createStudyPayload(imageData, {
+      sourceType: "nifti",
+      modality: "NIFTI",
+      maxSliceCount: 3
+    });
+
+    expect(payload.slices).toHaveLength(3);
+    expect(payload.slices.map((slice) => slice.sourceIndex)).toEqual([1, 4, 7]);
   });
 
   it("marks CT studies as HU-mapped and preserves transparent air", () => {
