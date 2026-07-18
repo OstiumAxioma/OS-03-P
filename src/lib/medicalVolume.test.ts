@@ -4,6 +4,8 @@ import {
   createMedicalVolume,
   createSliceTextureData,
   getAxialSlice,
+  mapHuToTissue,
+  mapNormalizedToTissue,
   selectSliceIndices,
   toVtkImageData
 } from "./medicalVolume";
@@ -43,13 +45,52 @@ describe("toVtkImageData", () => {
 });
 
 describe("createSliceTextureData", () => {
-  it("uses one vtk slice for paired diffuse and roughness textures", () => {
+  it("uses one vtk slice for tissue color, roughness, and SSS thickness textures", () => {
     const imageData = toVtkImageData(createMedicalVolume(16, 14, 10));
-    const textures = createSliceTextureData(imageData, 5);
+    const textures = createSliceTextureData(imageData, 5, "hu");
 
     expect(textures.diffuse).toHaveLength(16 * 14 * 4);
     expect(textures.roughness).toHaveLength(16 * 14);
+    expect(textures.thickness).toHaveLength(16 * 14);
     expect(new Set(textures.diffuse).size).toBeGreaterThan(8);
     expect(new Set(textures.roughness).size).toBeGreaterThan(4);
+    expect(new Set(textures.thickness).size).toBeGreaterThan(4);
+
+    const alphaValues = Array.from(textures.diffuse.filter((_, index) => index % 4 === 3));
+    expect(alphaValues).toContain(0);
+  });
+});
+
+describe("mapHuToTissue", () => {
+  it("makes air completely transparent", () => {
+    expect(mapHuToTissue(-1000)).toMatchObject({ alpha: 0, thickness: 0 });
+  });
+
+  it("assigns distinct human tissue colors to fat, soft tissue, and bone", () => {
+    const fat = mapHuToTissue(-100);
+    const softTissue = mapHuToTissue(55);
+    const bone = mapHuToTissue(1200);
+
+    expect(fat.color[0]).toBeGreaterThan(fat.color[1]);
+    expect(fat.color[1]).toBeGreaterThan(fat.color[2]);
+    expect(softTissue.color[0]).toBeGreaterThan(softTissue.color[1] * 1.8);
+    expect(softTissue.color[0]).toBeGreaterThan(softTissue.color[2] * 1.5);
+    expect(bone.color.every((channel) => channel > 205)).toBe(true);
+    expect(bone.alpha).toBeGreaterThanOrEqual(softTissue.alpha);
+  });
+
+  it("interpolates continuously across HU transfer points", () => {
+    const lower = mapHuToTissue(49);
+    const upper = mapHuToTissue(51);
+
+    expect(Math.max(...lower.color.map((channel, index) => Math.abs(channel - upper.color[index])))).toBeLessThan(12);
+    expect(Math.abs(lower.alpha - upper.alpha)).toBeLessThan(12);
+  });
+});
+
+describe("mapNormalizedToTissue", () => {
+  it("keeps the minimum transparent and produces tissue at the upper range", () => {
+    expect(mapNormalizedToTissue(0)).toMatchObject({ alpha: 0, thickness: 0 });
+    expect(mapNormalizedToTissue(1).alpha).toBeGreaterThan(220);
   });
 });

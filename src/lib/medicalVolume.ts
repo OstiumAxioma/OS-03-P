@@ -11,7 +11,73 @@ export type SliceTextureData = {
   height: number;
   diffuse: Uint8Array;
   roughness: Uint8Array;
+  thickness: Uint8Array;
 };
+
+export type IntensityMapping = "hu" | "normalized";
+
+export type TissueSample = {
+  color: [number, number, number];
+  alpha: number;
+  roughness: number;
+  thickness: number;
+};
+
+type TissueTransferPoint = TissueSample & {
+  value: number;
+};
+
+const HU_TISSUE_TRANSFER: TissueTransferPoint[] = [
+  { value: -1000, color: [0, 0, 0], alpha: 0, roughness: 255, thickness: 0 },
+  { value: -900, color: [42, 20, 24], alpha: 0, roughness: 244, thickness: 0 },
+  { value: -700, color: [172, 82, 92], alpha: 82, roughness: 222, thickness: 72 },
+  { value: -300, color: [196, 116, 104], alpha: 142, roughness: 210, thickness: 110 },
+  { value: -120, color: [235, 188, 72], alpha: 190, roughness: 194, thickness: 152 },
+  { value: -40, color: [238, 158, 68], alpha: 210, roughness: 184, thickness: 174 },
+  { value: 20, color: [172, 54, 48], alpha: 225, roughness: 176, thickness: 214 },
+  { value: 80, color: [154, 34, 40], alpha: 235, roughness: 166, thickness: 228 },
+  { value: 200, color: [205, 74, 56], alpha: 242, roughness: 148, thickness: 188 },
+  { value: 400, color: [235, 172, 124], alpha: 248, roughness: 124, thickness: 132 },
+  { value: 1200, color: [244, 228, 212], alpha: 255, roughness: 88, thickness: 62 },
+  { value: 2500, color: [255, 248, 238], alpha: 255, roughness: 70, thickness: 42 }
+];
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function interpolateByte(start: number, end: number, factor: number): number {
+  return Math.round(start + (end - start) * factor);
+}
+
+export function mapHuToTissue(hu: number): TissueSample {
+  const value = Number.isFinite(hu) ? hu : HU_TISSUE_TRANSFER[0].value;
+  const upperIndex = HU_TISSUE_TRANSFER.findIndex((point) => value <= point.value);
+
+  if (upperIndex <= 0) {
+    const first = HU_TISSUE_TRANSFER[0];
+    return { color: [...first.color], alpha: first.alpha, roughness: first.roughness, thickness: first.thickness };
+  }
+  if (upperIndex === -1) {
+    const last = HU_TISSUE_TRANSFER[HU_TISSUE_TRANSFER.length - 1];
+    return { color: [...last.color], alpha: last.alpha, roughness: last.roughness, thickness: last.thickness };
+  }
+
+  const lower = HU_TISSUE_TRANSFER[upperIndex - 1];
+  const upper = HU_TISSUE_TRANSFER[upperIndex];
+  const factor = clamp01((value - lower.value) / (upper.value - lower.value));
+
+  return {
+    color: lower.color.map((channel, index) => interpolateByte(channel, upper.color[index], factor)) as [number, number, number],
+    alpha: interpolateByte(lower.alpha, upper.alpha, factor),
+    roughness: interpolateByte(lower.roughness, upper.roughness, factor),
+    thickness: interpolateByte(lower.thickness, upper.thickness, factor)
+  };
+}
+
+export function mapNormalizedToTissue(value: number): TissueSample {
+  return mapHuToTissue(-1000 + clamp01(value) * 2200);
+}
 
 export function createMedicalVolume(width: number, height: number, depth: number): MedicalVolume {
   const values = new Array<number>(width * height * depth);
@@ -106,31 +172,39 @@ export function toVtkImageData(volume: MedicalVolume): VtkImageData {
   return imageData;
 }
 
-export function createSliceTextureData(imageData: VtkImageData, sliceIndex: number): SliceTextureData {
+export function createSliceTextureData(
+  imageData: VtkImageData,
+  sliceIndex: number,
+  intensityMapping: IntensityMapping = "hu"
+): SliceTextureData {
   const [width, height, depth] = imageData.getDimensions();
   const safeIndex = Math.min(Math.max(Math.round(sliceIndex), 0), depth - 1);
   const scalars = imageData.getPointData().getScalars().getData();
   const planeSize = width * height;
   const diffuse = new Uint8Array(planeSize * 4);
   const roughness = new Uint8Array(planeSize);
+  const thickness = new Uint8Array(planeSize);
   const offset = safeIndex * planeSize;
+  const range = imageData.getPointData().getScalars().getRange();
+  const rangeWidth = Math.max(Number.EPSILON, range[1] - range[0]);
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const sourceIndex = offset + y * width + x;
       const targetIndex = (height - 1 - y) * width + x;
-      const hu = Number(scalars[sourceIndex]);
-      const windowed = Math.min(1, Math.max(0, (hu + 160) / 1320));
-      const tone = Math.round(Math.pow(windowed, 0.62) * 236);
-      const alpha = hu < -900 ? 34 : 238;
+      const scalar = Number(scalars[sourceIndex]);
+      const sample = intensityMapping === "hu"
+        ? mapHuToTissue(scalar)
+        : mapNormalizedToTissue((scalar - range[0]) / rangeWidth);
 
-      diffuse[targetIndex * 4] = Math.min(255, tone + 8);
-      diffuse[targetIndex * 4 + 1] = Math.min(255, tone + 14);
-      diffuse[targetIndex * 4 + 2] = Math.min(255, tone + 12);
-      diffuse[targetIndex * 4 + 3] = alpha;
-      roughness[targetIndex] = Math.round(174 + (1 - windowed) * 56 + Math.abs(Math.sin(hu * 0.031)) * 18);
+      diffuse[targetIndex * 4] = sample.color[0];
+      diffuse[targetIndex * 4 + 1] = sample.color[1];
+      diffuse[targetIndex * 4 + 2] = sample.color[2];
+      diffuse[targetIndex * 4 + 3] = sample.alpha;
+      roughness[targetIndex] = sample.roughness;
+      thickness[targetIndex] = sample.thickness;
     }
   }
 
-  return { width, height, diffuse, roughness };
+  return { width, height, diffuse, roughness, thickness };
 }
