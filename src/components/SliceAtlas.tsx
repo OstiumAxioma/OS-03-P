@@ -308,11 +308,11 @@ export default function SliceAtlas() {
         sheen: 0.16,
         sheenColor: new THREE.Color(0xff6f61),
         sheenRoughness: 0.82,
-        transparent: true,
+        transparent: false,
         opacity: 1,
-        alphaTest: 0.01,
+        alphaTest: 0.08,
         side: THREE.FrontSide,
-        depthWrite: false
+        depthWrite: true
       });
       tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
       tissueMaterial.thicknessDistortionNode = float(0.16);

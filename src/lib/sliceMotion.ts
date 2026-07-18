@@ -43,6 +43,6 @@ export function getSliceTarget(base: SliceTransform, active: boolean): SliceTran
 
 export function getSliceVisualState(active: boolean): SliceVisualState {
   return active
-    ? { tissueIntensity: 1, sssScale: 1, edgeOpacity: 0.78 }
-    : { tissueIntensity: 0.72, sssScale: 0.62, edgeOpacity: 0.38 };
+    ? { tissueIntensity: 1.15, sssScale: 1, edgeOpacity: 0.78 }
+    : { tissueIntensity: 1, sssScale: 0.72, edgeOpacity: 0.38 };
 }
