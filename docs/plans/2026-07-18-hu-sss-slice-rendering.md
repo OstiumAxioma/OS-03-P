@@ -96,21 +96,13 @@ Expected: PASS.
 - Modify: `src/components/SliceAtlas.tsx`
 - Modify: `src/app/globals.css`
 
-**Step 1: Add a source-level renderer contract test**
-
-Create a focused test that reads the component source and requires `WebGPURenderer`, `MeshSSSNodeMaterial`, `RoomEnvironment`, `BoxGeometry`, and Z-up camera configuration while rejecting `RoundedBoxGeometry` and the old image plane. This guards the chosen renderer architecture without mocking a GPU.
-
-**Step 2: Run test to verify it fails**
-
-Run: `npm test -- --run src/components/SliceAtlas.rendering.test.ts`
-
-Expected: FAIL against the current WebGL rounded-box implementation.
-
-**Step 3: Implement renderer initialization and SSS nodes**
+**Step 1: Implement renderer initialization and SSS nodes**
 
 Import Three.js from `three/webgpu` and texture nodes from `three/tsl`. Initialize `WebGPURenderer` asynchronously, generate a PMREM from `RoomEnvironment`, bind RGBA/roughness/thickness `DataTexture` instances, and configure `MeshSSSNodeMaterial` thickness nodes. Use the tissue material on front/back box material groups and the edge material on the other four groups. Dispose renderer, render target, node materials, textures and geometries on replacement.
 
-**Step 4: Run focused and full tests**
+The GPU renderer boundary is verified by the production TypeScript build and real-browser inspection rather than a source-text smoke test. The pure HU, payload and motion behavior remains test-first.
+
+**Step 2: Run full tests**
 
 Run: `npm test`
 
