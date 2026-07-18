@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .playwright-cli/
+.wrangler/
 dist/
 out/
 coverage/
