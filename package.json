@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/prepare-sites-output.mjs",
     "start": "next start",
     "test": "vitest run"
   },
