@@ -115,12 +115,12 @@ export default function SliceAtlas() {
 
     setReady(false);
     const sliceCount = study?.slices.length || PLACEHOLDER_SLICE_COUNT;
-    const initialActive = study ? Math.floor(sliceCount / 2) : null;
+    const initialActive: number | null = null;
     activeRef.current = initialActive;
     setActiveSlice(initialActive);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x53ffba);
+    scene.background = null;
     scene.fog = new THREE.Fog(0x53ffba, 13, 25);
 
     const camera = new THREE.OrthographicCamera(-6.7, 6.7, 4.7, -4.7, 0.1, 60);
@@ -128,7 +128,7 @@ export default function SliceAtlas() {
     camera.position.set(8.8, -11.5, 5.8);
     camera.lookAt(0, 0.12, 0);
 
-    const renderer = new THREE.WebGPURenderer({ antialias: true, powerPreference: "high-performance" });
+    const renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -137,6 +137,7 @@ export default function SliceAtlas() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.autoClear = false;
+    renderer.setClearColor(0x53ffba, 0);
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
@@ -312,7 +313,7 @@ export default function SliceAtlas() {
 
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(30, 30),
-      new THREE.MeshStandardNodeMaterial({ color: 0x53ffba, roughness: 0.96, metalness: 0 })
+      new THREE.ShadowNodeMaterial({ color: 0x176a57, opacity: 0.14, transparent: true })
     );
     ground.position.z = -2.36;
     ground.receiveShadow = true;

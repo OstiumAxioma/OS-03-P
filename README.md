@@ -1,6 +1,6 @@
 # ThreeVTK
 
-ThreeVTK 是一个基于 Next.js、Three.js、vtk.js 与 ITK-Wasm 的医学切片玻璃可视化项目。浏览器只负责上传和三维渲染；DICOM / NIfTI 解码、序列选择和纹理生成均在 Node.js 服务器进程中完成。
+ThreeVTK 是一个基于 Next.js、Three.js、vtk.js 与 ITK-Wasm 的医学组织切片可视化项目。浏览器只负责上传和 GPU 三维渲染；DICOM / NIfTI 解码、序列选择、组织着色和纹理生成均在 Node.js 服务器进程中完成。
 
 ## 本地运行
 
@@ -18,7 +18,7 @@ npm ci
 npm run dev
 ```
 
-然后访问 `http://localhost:3000`。开发服务器启用 GPU WebGL 渲染，不需要在用户电脑安装 ITK、VTK 或 Python。
+然后访问 `http://localhost:3000`。前端使用 Three.js `WebGPURenderer` 与 `MeshSSSNodeMaterial`；支持 WebGPU 时直接使用 WebGPU，否则由 Three.js 回退到 WebGL2。不会禁用 GPU，也不需要在用户电脑安装 ITK、VTK 或 Python。
 
 生产模式本地验证：
 
@@ -40,6 +40,17 @@ npm test
 - DICOM 存在多个序列时，服务器按 `SeriesInstanceUID` 分组，并自动选择文件数最多的序列。
 - 服务器最多返回 7 层切片纹理，单张纹理最长边不超过 512 像素。
 
+## 组织颜色与 SSS 渲染
+
+- 每张切片是一个无圆角、封闭的薄 `BoxGeometry`，不使用内部黑底 Plane。
+- CT 数据按连续 HU 传递函数为肺、脂肪、软组织、致密组织和骨骼着色；空气区域写入 `alpha = 0`。
+- 非 CT NIfTI 没有可靠 HU 语义，使用数据范围归一化调色，并在界面标记为 `NORMALIZED`。
+- 服务器为每层生成 RGBA 组织颜色、roughness 和 SSS thickness 三张纹理。
+- 正反面使用 `MeshSSSNodeMaterial`，侧面使用物理透射材质；`RoomEnvironment + PMREM` 提供环境光照。
+- 场景采用 Z-up：X 为左右，Y 为切片层深，Z 为上下和切片抽出方向。
+
+HU 颜色映射仅用于可视化效果，不是医学诊断分割、组织识别或定量分析结果。
+
 默认上传上限为 1 GB。可在启动前通过环境变量调整，例如：
 
 ```powershell
@@ -54,7 +65,7 @@ npm run dev
 - `kind`: `dicom` 或 `nifti`
 - `files`: 一个或多个文件
 
-成功响应包含研究尺寸、间距、模态、总切片数，以及最多 7 组 Base64 diffuse / roughness 纹理。DICOM 响应不会包含患者姓名、患者 ID 等身份字段。
+成功响应包含研究尺寸、间距、模态、`intensityMapping`（`hu` 或 `normalized`）、总切片数，以及最多 7 组 Base64 diffuse / roughness / thickness 纹理。DICOM 响应不会包含患者姓名、患者 ID 等身份字段。
 
 错误响应统一为：
 
