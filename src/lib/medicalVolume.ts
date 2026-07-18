@@ -1,6 +1,8 @@
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 import vtkImageData, { type vtkImageData as VtkImageData } from "@kitware/vtk.js/Common/DataModel/ImageData";
 
+import type { IntensityMapping } from "./studyTypes";
+
 export type MedicalVolume = {
   dimensions: [number, number, number];
   values: number[];
@@ -13,8 +15,6 @@ export type SliceTextureData = {
   roughness: Uint8Array;
   thickness: Uint8Array;
 };
-
-export type IntensityMapping = "hu" | "normalized";
 
 export type TissueSample = {
   color: [number, number, number];

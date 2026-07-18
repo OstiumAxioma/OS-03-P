@@ -34,11 +34,26 @@ describe("createStudyPayload", () => {
     });
 
     expect(payload.dimensions).toEqual([24, 20, 12]);
+    expect(payload.intensityMapping).toBe("normalized");
     expect(payload.slices).toHaveLength(7);
     expect(payload.slices.every((slice) => slice.width <= 12 && slice.height <= 12)).toBe(true);
 
     const first = payload.slices[0];
     expect(Buffer.from(first.diffuseBase64, "base64")).toHaveLength(first.width * first.height * 4);
     expect(Buffer.from(first.roughnessBase64, "base64")).toHaveLength(first.width * first.height);
+    expect(Buffer.from(first.thicknessBase64, "base64")).toHaveLength(first.width * first.height);
+  });
+
+  it("marks CT studies as HU-mapped and preserves transparent air", () => {
+    const imageData = toVtkImageData(createMedicalVolume(16, 14, 8));
+    const payload = createStudyPayload(imageData, {
+      sourceType: "dicom",
+      modality: "CT"
+    });
+
+    expect(payload.intensityMapping).toBe("hu");
+    const rgba = Buffer.from(payload.slices[0].diffuseBase64, "base64");
+    const alpha = Array.from(rgba).filter((_, index) => index % 4 === 3);
+    expect(alpha).toContain(0);
   });
 });

@@ -1,7 +1,7 @@
 import type { vtkImageData as VtkImageData } from "@kitware/vtk.js/Common/DataModel/ImageData";
 
 import { createSliceTextureData, selectSliceIndices } from "../medicalVolume";
-import type { StudyKind, StudyPayload, StudySlicePayload } from "../studyTypes";
+import type { IntensityMapping, StudyKind, StudyPayload } from "../studyTypes";
 
 export type DicomFileMetadata = {
   filePath: string;
@@ -64,21 +64,26 @@ function resizeSlice(
   height: number,
   diffuse: Uint8Array,
   roughness: Uint8Array,
+  thickness: Uint8Array,
   maxTextureSize: number
-): Omit<StudySlicePayload, "sourceIndex" | "diffuseBase64" | "roughnessBase64"> & {
+): {
+  width: number;
+  height: number;
   diffuse: Uint8Array;
   roughness: Uint8Array;
+  thickness: Uint8Array;
 } {
   const scale = Math.min(1, maxTextureSize / width, maxTextureSize / height);
   const targetWidth = Math.max(1, Math.round(width * scale));
   const targetHeight = Math.max(1, Math.round(height * scale));
 
   if (targetWidth === width && targetHeight === height) {
-    return { width, height, diffuse, roughness };
+    return { width, height, diffuse, roughness, thickness };
   }
 
   const targetDiffuse = new Uint8Array(targetWidth * targetHeight * 4);
   const targetRoughness = new Uint8Array(targetWidth * targetHeight);
+  const targetThickness = new Uint8Array(targetWidth * targetHeight);
 
   for (let y = 0; y < targetHeight; y += 1) {
     const sourceY = Math.min(height - 1, Math.floor((y / targetHeight) * height));
@@ -87,11 +92,18 @@ function resizeSlice(
       const sourceIndex = sourceY * width + sourceX;
       const targetIndex = y * targetWidth + x;
       targetRoughness[targetIndex] = roughness[sourceIndex];
+      targetThickness[targetIndex] = thickness[sourceIndex];
       targetDiffuse.set(diffuse.subarray(sourceIndex * 4, sourceIndex * 4 + 4), targetIndex * 4);
     }
   }
 
-  return { width: targetWidth, height: targetHeight, diffuse: targetDiffuse, roughness: targetRoughness };
+  return {
+    width: targetWidth,
+    height: targetHeight,
+    diffuse: targetDiffuse,
+    roughness: targetRoughness,
+    thickness: targetThickness
+  };
 }
 
 export function createStudyPayload(imageData: VtkImageData, options: StudyPayloadOptions): StudyPayload {
@@ -100,22 +112,32 @@ export function createStudyPayload(imageData: VtkImageData, options: StudyPayloa
   const spacing: [number, number, number] = [spacingValues[0], spacingValues[1], spacingValues[2]];
   const indices = selectSliceIndices(dimensions[2], Math.min(7, dimensions[2]));
   const maxTextureSize = options.maxTextureSize ?? 512;
+  const intensityMapping: IntensityMapping = options.modality.trim().toUpperCase() === "CT" ? "hu" : "normalized";
   const slices = indices.map((sourceIndex) => {
-    const source = createSliceTextureData(imageData, sourceIndex);
-    const resized = resizeSlice(source.width, source.height, source.diffuse, source.roughness, maxTextureSize);
+    const source = createSliceTextureData(imageData, sourceIndex, intensityMapping);
+    const resized = resizeSlice(
+      source.width,
+      source.height,
+      source.diffuse,
+      source.roughness,
+      source.thickness,
+      maxTextureSize
+    );
 
     return {
       sourceIndex,
       width: resized.width,
       height: resized.height,
       diffuseBase64: Buffer.from(resized.diffuse).toString("base64"),
-      roughnessBase64: Buffer.from(resized.roughness).toString("base64")
+      roughnessBase64: Buffer.from(resized.roughness).toString("base64"),
+      thicknessBase64: Buffer.from(resized.thickness).toString("base64")
     };
   });
 
   return {
     sourceType: options.sourceType,
     modality: options.modality,
+    intensityMapping,
     seriesDescription: options.seriesDescription,
     selectedSeriesUid: options.selectedSeriesUid,
     dimensions,
