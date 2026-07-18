@@ -33,6 +33,7 @@ import {
 const SLICE_BOTTOM_Y = -3.95 / 2;
 const ACES_BACKGROUND_COMPENSATION = 12;
 const GLASS_EDGE_ENVIRONMENT_GAIN = 4.2;
+const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.05;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -312,7 +313,10 @@ export default function SliceAtlas() {
         opacity: 1,
         alphaTest: 0.08,
         side: THREE.FrontSide,
-        depthWrite: true
+        depthWrite: true,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1
       });
       tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
       tissueMaterial.thicknessDistortionNode = float(0.16);
@@ -466,7 +470,6 @@ export default function SliceAtlas() {
         const wasVisible = group.visible;
         const inactiveVisual = getSliceVisualState(false);
         const scaledThickness = baseThicknesses[index] * thicknessScaleRef.current;
-        glassMaterials[index].thickness = scaledThickness;
 
         if (!isVisible) {
           group.visible = false;
@@ -478,6 +481,7 @@ export default function SliceAtlas() {
           group.scale.set(1, 1, thicknessScaleRef.current);
           tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
           sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
+          glassMaterials[index].thickness = scaledThickness;
           glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
           return;
         }
@@ -493,6 +497,7 @@ export default function SliceAtlas() {
         };
         const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
+        const opticalThicknessTarget = scaledThickness * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
         if (!wasVisible || shouldSnapVisibleLayout) {
           group.position.set(target.x, target.y, target.z);
           group.scale.set(1, 1, thicknessScaleRef.current);
@@ -508,6 +513,12 @@ export default function SliceAtlas() {
         group.scale.z = THREE.MathUtils.damp(
           group.scale.z,
           thicknessScaleRef.current,
+          damping,
+          delta
+        );
+        glassMaterials[index].thickness = THREE.MathUtils.damp(
+          glassMaterials[index].thickness,
+          opticalThicknessTarget,
           damping,
           delta
         );
