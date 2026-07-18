@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
-import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import * as THREE from "three/webgpu";
+import { float, texture as textureNode, uniform } from "three/tsl";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 import { decodeBase64Bytes } from "@/lib/studyClient";
 import type { StudyErrorPayload, StudyKind, StudyPayload } from "@/lib/studyTypes";
@@ -78,7 +79,7 @@ export default function SliceAtlas() {
     request.upload.onload = () => {
       setUploadPhase("processing");
       setUploadProgress(100);
-      setUploadMessage("服务器正在解析并生成玻璃切片纹理…");
+      setUploadMessage("服务器正在解析并生成组织颜色与 SSS 厚度纹理…");
     };
     request.onerror = () => {
       setUploadPhase("error");
@@ -96,7 +97,9 @@ export default function SliceAtlas() {
         const payload = body as StudyPayload;
         setStudy(payload);
         setUploadPhase("ready");
-        setUploadMessage(`已生成 ${payload.slices.length} 层纹理，原始上传文件已从临时目录删除。`);
+        setUploadMessage(
+          `已生成 ${payload.slices.length} 层 ${payload.intensityMapping === "hu" ? "HU" : "归一化"} 组织纹理，原始上传文件已删除。`
+        );
       } catch {
         setUploadPhase("error");
         setUploadMessage("服务器返回了无法识别的响应。");
@@ -121,10 +124,11 @@ export default function SliceAtlas() {
     scene.fog = new THREE.Fog(0x53ffba, 13, 25);
 
     const camera = new THREE.OrthographicCamera(-6.7, 6.7, 4.7, -4.7, 0.1, 60);
-    camera.position.set(8.8, 5.8, 11.5);
+    camera.up.set(0, 0, 1);
+    camera.position.set(8.8, -11.5, 5.8);
     camera.lookAt(0, 0.12, 0);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    const renderer = new THREE.WebGPURenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -136,10 +140,12 @@ export default function SliceAtlas() {
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xf3fff9, 0x164a3f, 2.15));
+    const hemisphereLight = new THREE.HemisphereLight(0xfff6ef, 0x164a3f, 1.3);
+    hemisphereLight.position.set(0, 0, 1);
+    scene.add(hemisphereLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 5.5);
-    keyLight.position.set(-4, 8, 9);
+    const keyLight = new THREE.DirectionalLight(0xfff4ec, 3.8);
+    keyLight.position.set(-4, -6, 9);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
     keyLight.shadow.camera.left = -8;
@@ -148,12 +154,13 @@ export default function SliceAtlas() {
     keyLight.shadow.camera.bottom = -8;
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0xbaffec, 4.2);
-    rimLight.position.set(8, 1, -7);
+    const rimLight = new THREE.DirectionalLight(0xff8068, 2.4);
+    rimLight.position.set(7, 4, 3);
     scene.add(rimLight);
 
     const axisScene = new THREE.Scene();
     const axisCamera = new THREE.PerspectiveCamera(34, 1, 0.1, 20);
+    axisCamera.up.set(0, 0, 1);
     axisCamera.position.copy(camera.position).normalize().multiplyScalar(4.2);
     axisCamera.lookAt(0, 0, 0);
     const axisColor = 0x061f18;
@@ -180,30 +187,17 @@ export default function SliceAtlas() {
 
     const layout = createSliceLayout(sliceCount, 0.62);
     const panelGroups: SliceGroup[] = [];
-    const glassMaterials: THREE.MeshPhysicalMaterial[] = [];
-    const imageMaterials: THREE.MeshStandardMaterial[] = [];
-    const edgeMaterials: THREE.MeshPhysicalMaterial[] = [];
+    const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
+    const edgeMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
+    const sssScaleNodes: Array<ReturnType<typeof uniform>> = [];
+    const dataTextures = new Set<THREE.Texture>();
     const raycastTargets: THREE.Object3D[] = [];
-
-    const ribPixels = new Uint8Array(128 * 4);
-    for (let x = 0; x < 128; x += 1) {
-      const stripe = 0.52 + Math.cos((x / 128) * Math.PI * 32) * 0.32;
-      const hueShift = Math.sin((x / 128) * Math.PI * 6);
-      ribPixels[x * 4] = Math.round(205 + stripe * 45 + Math.max(0, hueShift) * 5);
-      ribPixels[x * 4 + 1] = Math.round(225 + stripe * 27);
-      ribPixels[x * 4 + 2] = Math.round(220 + stripe * 25 + Math.max(0, -hueShift) * 10);
-      ribPixels[x * 4 + 3] = 255;
-    }
-    const ribTexture = new THREE.DataTexture(ribPixels, 128, 1, THREE.RGBAFormat);
-    ribTexture.colorSpace = THREE.SRGBColorSpace;
-    ribTexture.wrapS = THREE.RepeatWrapping;
-    ribTexture.repeat.set(1.6, 1);
-    ribTexture.needsUpdate = true;
 
     layout.forEach((base, sliceIndex) => {
       const payload = study?.slices[sliceIndex];
-      const diffuseBytes = payload ? decodeBase64Bytes(payload.diffuseBase64) : new Uint8Array([224, 255, 244, 0]);
+      const diffuseBytes = payload ? decodeBase64Bytes(payload.diffuseBase64) : new Uint8Array([0, 0, 0, 0]);
       const roughnessBytes = payload ? decodeBase64Bytes(payload.roughnessBase64) : new Uint8Array([232]);
+      const thicknessBytes = payload ? decodeBase64Bytes(payload.thicknessBase64) : new Uint8Array([0]);
       const textureWidth = payload?.width ?? 1;
       const textureHeight = payload?.height ?? 1;
       const diffuseTexture = new THREE.DataTexture(
@@ -216,7 +210,9 @@ export default function SliceAtlas() {
       diffuseTexture.colorSpace = THREE.SRGBColorSpace;
       diffuseTexture.minFilter = THREE.LinearFilter;
       diffuseTexture.magFilter = THREE.LinearFilter;
+      diffuseTexture.generateMipmaps = false;
       diffuseTexture.needsUpdate = true;
+      dataTextures.add(diffuseTexture);
 
       const roughnessTexture = new THREE.DataTexture(
         roughnessBytes,
@@ -227,116 +223,100 @@ export default function SliceAtlas() {
       );
       roughnessTexture.minFilter = THREE.LinearFilter;
       roughnessTexture.magFilter = THREE.LinearFilter;
+      roughnessTexture.generateMipmaps = false;
       roughnessTexture.needsUpdate = true;
+      dataTextures.add(roughnessTexture);
+
+      const thicknessTexture = new THREE.DataTexture(
+        thicknessBytes,
+        textureWidth,
+        textureHeight,
+        THREE.RedFormat,
+        THREE.UnsignedByteType
+      );
+      thicknessTexture.minFilter = THREE.LinearFilter;
+      thicknessTexture.magFilter = THREE.LinearFilter;
+      thicknessTexture.generateMipmaps = false;
+      thicknessTexture.needsUpdate = true;
+      dataTextures.add(thicknessTexture);
 
       const initialVisual = getSliceVisualState(sliceIndex === initialActive);
       const group = new THREE.Group() as SliceGroup;
       group.position.set(base.x, base.y, base.z);
-      group.rotation.y = base.rotationY;
+      group.rotation.z = base.rotationZ;
       group.userData = { base, sliceIndex };
 
-      const glassGeometry = new RoundedBoxGeometry(5.1, 3.95, 0.18, 7, 0.14);
-      const glassMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xd9fff3,
-        metalness: 0,
-        roughness: 0.52,
-        roughnessMap: roughnessTexture,
-        transmission: 0.28,
-        thickness: 1.1,
-        ior: 1.46,
-        transparent: true,
-        opacity: initialVisual.glassOpacity,
-        clearcoat: 0.62,
-        clearcoatRoughness: 0.28,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const glass = new THREE.Mesh(glassGeometry, glassMaterial);
-      glass.castShadow = true;
-      glass.receiveShadow = true;
-      glass.userData.sliceIndex = sliceIndex;
-      group.add(glass);
-      glassMaterials.push(glassMaterial);
-
-      const imageMaterial = new THREE.MeshStandardMaterial({
+      const sssScaleNode = uniform(11 * initialVisual.sssScale);
+      const tissueMaterial = new THREE.MeshSSSNodeMaterial({
+        color: new THREE.Color().setScalar(initialVisual.tissueIntensity),
         map: diffuseTexture,
         roughnessMap: roughnessTexture,
-        roughness: 0.7,
+        roughness: 0.62,
         metalness: 0,
+        clearcoat: 0.08,
+        clearcoatRoughness: 0.56,
+        sheen: 0.16,
+        sheenColor: new THREE.Color(0xff6f61),
+        sheenRoughness: 0.82,
         transparent: true,
-        opacity: payload ? initialVisual.imageOpacity : 0,
-        side: THREE.DoubleSide,
+        opacity: 1,
+        alphaTest: 0.01,
+        side: THREE.FrontSide,
         depthWrite: false
       });
-      const availableWidth = 4.72;
-      const availableHeight = 3.54;
-      const aspect = textureWidth / textureHeight;
-      const planeWidth = aspect > availableWidth / availableHeight ? availableWidth : availableHeight * aspect;
-      const planeHeight = aspect > availableWidth / availableHeight ? availableWidth / aspect : availableHeight;
-      const imagePlane = new THREE.Mesh(new THREE.PlaneGeometry(planeWidth, planeHeight), imageMaterial);
-      imagePlane.position.z = 0.018;
-      imagePlane.userData.sliceIndex = sliceIndex;
-      group.add(imagePlane);
-      imageMaterials.push(imageMaterial);
+      tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
+      tissueMaterial.thicknessDistortionNode = float(0.16);
+      tissueMaterial.thicknessAmbientNode = float(0.08);
+      tissueMaterial.thicknessAttenuationNode = textureNode(thicknessTexture).r.mul(float(0.72)) as unknown as typeof tissueMaterial.thicknessAttenuationNode;
+      tissueMaterial.thicknessPowerNode = float(2.1);
+      tissueMaterial.thicknessScaleNode = sssScaleNode;
+      tissueMaterials.push(tissueMaterial);
+      sssScaleNodes.push(sssScaleNode);
 
-      const edgeMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xeafff8,
-        map: ribTexture,
-        roughness: 0.12,
-        metalness: 0.02,
-        transmission: 0.7,
-        thickness: 0.8,
-        ior: 1.5,
-        transparent: true,
-        opacity: initialVisual.edgeOpacity,
-        iridescence: 0.62,
-        iridescenceIOR: 1.27,
-        iridescenceThicknessRange: [120, 610],
-        clearcoat: 1,
-        clearcoatRoughness: 0.08,
-        depthWrite: false
+      const edgeMaterial = new THREE.MeshPhysicalNodeMaterial({
+        color: 0xd8fff1,
+        roughness: 0.22,
+        metalness: 0,
+        transmission: 0.82,
+        thickness: 0.18,
+        ior: 1.46,
+        opacity: 1,
+        clearcoat: 0.42,
+        clearcoatRoughness: 0.18,
+        side: THREE.FrontSide,
+        depthWrite: true,
+        envMapIntensity: initialVisual.edgeOpacity
       });
       edgeMaterials.push(edgeMaterial);
 
-      const horizontalEdgeGeometry = new RoundedBoxGeometry(5.14, 0.085, 0.27, 4, 0.04);
-      const verticalEdgeGeometry = new RoundedBoxGeometry(0.085, 3.93, 0.27, 4, 0.04);
-      const edgePositions: Array<[THREE.BufferGeometry, number, number]> = [
-        [horizontalEdgeGeometry, 0, 1.945],
-        [horizontalEdgeGeometry, 0, -1.945],
-        [verticalEdgeGeometry, 2.555, 0],
-        [verticalEdgeGeometry, -2.555, 0]
-      ];
-      edgePositions.forEach(([geometry, x, y]) => {
-        const edge = new THREE.Mesh(geometry, edgeMaterial);
-        edge.position.set(x, y, 0.015);
-        edge.userData.sliceIndex = sliceIndex;
-        group.add(edge);
-      });
-
-      const outline = new THREE.LineSegments(
-        new THREE.EdgesGeometry(glassGeometry, 28),
-        new THREE.LineBasicMaterial({ color: 0x103b34, transparent: true, opacity: 0.15 })
-      );
-      outline.userData.sliceIndex = sliceIndex;
-      group.add(outline);
-
-      group.traverse((object) => {
-        if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
-          raycastTargets.push(object);
-        }
-      });
+      const maxWidth = 5.1;
+      const maxHeight = 3.95;
+      const aspect = textureWidth / textureHeight;
+      const boxWidth = aspect > maxWidth / maxHeight ? maxWidth : maxHeight * aspect;
+      const boxHeight = aspect > maxWidth / maxHeight ? maxWidth / aspect : maxHeight;
+      const boxGeometry = new THREE.BoxGeometry(boxWidth, boxHeight, 0.18);
+      const faceMaterials: THREE.Material[] = payload
+        ? [edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, tissueMaterial, tissueMaterial]
+        : [edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial];
+      const sliceBox = new THREE.Mesh(boxGeometry, faceMaterials);
+      sliceBox.rotation.x = Math.PI / 2;
+      sliceBox.castShadow = true;
+      sliceBox.receiveShadow = true;
+      sliceBox.renderOrder = sliceIndex;
+      sliceBox.userData.sliceIndex = sliceIndex;
+      group.add(sliceBox);
+      raycastTargets.push(sliceBox);
       panelGroups.push(group);
       scene.add(group);
     });
 
-    const shadow = new THREE.Mesh(
-      new THREE.CircleGeometry(4.3, 64),
-      new THREE.MeshBasicMaterial({ color: 0x176a57, transparent: true, opacity: 0.11, depthWrite: false })
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(30, 30),
+      new THREE.MeshStandardNodeMaterial({ color: 0x53ffba, roughness: 0.96, metalness: 0 })
     );
-    shadow.scale.set(1.65, 0.42, 1);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.set(0.4, -2.34, 0.1);
-    scene.add(shadow);
+    ground.position.z = -2.36;
+    ground.receiveShadow = true;
+    scene.add(ground);
 
     const pointer = new THREE.Vector2(4, 4);
     const raycaster = new THREE.Raycaster();
@@ -394,8 +374,9 @@ export default function SliceAtlas() {
     resizeObserver.observe(mount);
 
     const clock = new THREE.Clock();
-    let frame = 0;
     let animationFrame = 0;
+    let disposed = false;
+    let environmentTarget: THREE.RenderTarget | null = null;
     const render = () => {
       const delta = Math.min(clock.getDelta(), 0.05);
       const elapsed = clock.elapsedTime;
@@ -409,22 +390,28 @@ export default function SliceAtlas() {
         group.position.x = THREE.MathUtils.damp(group.position.x, target.x + lateralWave, damping, delta);
         group.position.y = THREE.MathUtils.damp(group.position.y, target.y, damping, delta);
         group.position.z = THREE.MathUtils.damp(group.position.z, target.z, damping, delta);
-        group.rotation.y = THREE.MathUtils.damp(group.rotation.y, target.rotationY, damping, delta);
+        group.rotation.z = THREE.MathUtils.damp(group.rotation.z, target.rotationZ, damping, delta);
         const scaleTarget = isActive ? 1.018 : 1;
         const scale = THREE.MathUtils.damp(group.scale.x, scaleTarget, damping, delta);
         group.scale.setScalar(scale);
-        imageMaterials[index].opacity = THREE.MathUtils.damp(
-          imageMaterials[index].opacity,
-          study ? visual.imageOpacity : 0,
+        const currentIntensity = tissueMaterials[index].color.r;
+        tissueMaterials[index].color.setScalar(
+          THREE.MathUtils.damp(currentIntensity, study ? visual.tissueIntensity : 0, 6.4, delta)
+        );
+        sssScaleNodes[index].value = THREE.MathUtils.damp(
+          Number(sssScaleNodes[index].value),
+          11 * visual.sssScale,
           6.4,
           delta
         );
-        glassMaterials[index].opacity = THREE.MathUtils.damp(glassMaterials[index].opacity, visual.glassOpacity, 6.4, delta);
-        edgeMaterials[index].opacity = THREE.MathUtils.damp(edgeMaterials[index].opacity, visual.edgeOpacity, 6.4, delta);
+        edgeMaterials[index].envMapIntensity = THREE.MathUtils.damp(
+          edgeMaterials[index].envMapIntensity,
+          visual.edgeOpacity,
+          6.4,
+          delta
+        );
       });
 
-      frame += 1;
-      ribTexture.offset.x = frame * 0.00016;
       const width = mount.clientWidth;
       const height = mount.clientHeight;
       renderer.setViewport(0, 0, width, height);
@@ -441,30 +428,70 @@ export default function SliceAtlas() {
       animationFrame = window.requestAnimationFrame(render);
     };
 
-    setReady(true);
-    render();
+    const initializeRenderer = async () => {
+      try {
+        await renderer.init();
+        if (disposed) {
+          renderer.dispose();
+          return;
+        }
+
+        const roomEnvironment = new RoomEnvironment();
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        environmentTarget = await pmremGenerator.fromSceneAsync(roomEnvironment, 0.04);
+        pmremGenerator.dispose();
+        roomEnvironment.traverse((object) => {
+          if (object instanceof THREE.Mesh) {
+            object.geometry.dispose();
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            materials.forEach((material) => material.dispose());
+          }
+        });
+        if (disposed) {
+          environmentTarget.dispose();
+          renderer.dispose();
+          return;
+        }
+
+        scene.environment = environmentTarget.texture;
+        setReady(true);
+        render();
+      } catch {
+        if (!disposed) {
+          setUploadPhase("error");
+          setUploadMessage("当前浏览器无法初始化 WebGPU 或 WebGL2 SSS 渲染器。");
+        }
+      }
+    };
+    void initializeRenderer();
 
     return () => {
+      disposed = true;
       window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener("pointermove", updatePointer);
       renderer.domElement.removeEventListener("pointerdown", updatePointer);
       renderer.domElement.removeEventListener("pointerleave", clearPointer);
       mount.removeEventListener("keydown", selectByKeyboard);
+      const geometries = new Set<THREE.BufferGeometry>();
+      const materials = new Set<THREE.Material>();
       [scene, axisScene].forEach((targetScene) => {
         targetScene.traverse((object) => {
           if (object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments) {
-            object.geometry.dispose();
-            const materials = Array.isArray(object.material) ? object.material : [object.material];
-            materials.forEach((material) => material.dispose());
+            geometries.add(object.geometry);
+            const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+            objectMaterials.forEach((material) => materials.add(material));
           }
           if (object instanceof THREE.Sprite) {
-            object.material.map?.dispose();
-            object.material.dispose();
+            if (object.material.map) dataTextures.add(object.material.map);
+            materials.add(object.material);
           }
         });
       });
-      ribTexture.dispose();
+      geometries.forEach((geometry) => geometry.dispose());
+      materials.forEach((material) => material.dispose());
+      dataTextures.forEach((texture) => texture.dispose());
+      environmentTarget?.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -483,7 +510,11 @@ export default function SliceAtlas() {
           <span>LUMEN</span>
         </a>
         <div className="study-meta">
-          <span>{study ? `${study.modality} / ${study.sourceType.toUpperCase()}` : "NO STUDY LOADED"}</span>
+          <span>
+            {study
+              ? `${study.modality} / ${study.intensityMapping === "hu" ? "HU TISSUE" : "NORMALIZED"} SSS`
+              : "NO STUDY LOADED"}
+          </span>
           <span>{study ? `${study.dimensions.join(" × ")} · ${study.totalSlices} SLICES` : "SERVER-SIDE ITK PROCESSING"}</span>
         </div>
       </header>
@@ -494,7 +525,7 @@ export default function SliceAtlas() {
           Tissue,
           <br />in layers.
         </h1>
-        <p className="intro">上传 DICOM 或 NIfTI，服务器解析后生成可抽出的玻璃层片。</p>
+        <p className="intro">上传 DICOM 或 NIfTI，服务器将空气透明化，并生成可抽出的组织盒切片。</p>
         <div className="upload-panel">
           <input
             ref={dicomInputRef}
@@ -545,7 +576,7 @@ export default function SliceAtlas() {
         role="application"
         aria-label="三维医学切片查看器。上传影像后使用鼠标悬停，或用左右方向键选择切片。"
       >
-        <span className="loading-label">ASSEMBLING GLASS</span>
+        <span className="loading-label">INITIALIZING SSS</span>
       </div>
 
       <aside className="slice-readout" aria-live="polite">
@@ -562,7 +593,7 @@ export default function SliceAtlas() {
         <div className="slice-track" aria-hidden="true">
           <span style={{ width: `${progress}%` }} />
         </div>
-        <span className="engine-label">ITK-WASM × VTK.JS × THREE.JS</span>
+        <span className="engine-label">ITK-WASM × HU COLOR × WEBGPU SSS</span>
       </footer>
     </main>
   );
