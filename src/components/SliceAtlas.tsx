@@ -45,6 +45,14 @@ type SliceGroup = THREE.Group & {
   };
 };
 
+type FogAwareMaterial = THREE.Material & { fog: boolean };
+
+function setMaterialFog(material: FogAwareMaterial, enabled: boolean) {
+  if (material.fog === enabled) return;
+  material.fog = enabled;
+  material.needsUpdate = true;
+}
+
 function createAxisLabel(text: string, position: THREE.Vector3): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 96;
@@ -480,12 +488,16 @@ export default function SliceAtlas() {
           group.scale.set(1, 1, thicknessScaleRef.current);
           tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
           sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
+          setMaterialFog(tissueMaterials[index], true);
           glassMaterials[index].thickness = glassScaledThickness;
+          setMaterialFog(glassMaterials[index], true);
           glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
           return;
         }
 
         const isActive = activeRef.current === index;
+        setMaterialFog(tissueMaterials[index], !isActive);
+        setMaterialFog(glassMaterials[index], !isActive);
         const dynamicBase = {
           ...group.userData.base,
           z: getSliceStackZ(
