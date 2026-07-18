@@ -23,9 +23,15 @@ import {
   type SliceTransform
 } from "@/lib/sliceMotion";
 import { readSceneBackgroundColor } from "@/lib/sceneTheme";
+import {
+  DEFAULT_VISIBLE_SLICE_COUNT,
+  SLICE_TEXTURE_POOL_SIZE,
+  clampVisibleSliceCount,
+  selectVisibleSliceIndices
+} from "@/lib/sliceVisibility";
 
-const PLACEHOLDER_SLICE_COUNT = 7;
 const SLICE_BOTTOM_Y = -3.95 / 2;
+const ACES_BACKGROUND_COMPENSATION = 12;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -65,13 +71,19 @@ export default function SliceAtlas() {
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const activeRef = useRef<number | null>(null);
   const thicknessScaleRef = useRef(1);
+  const visibleSliceCountRef = useRef(DEFAULT_VISIBLE_SLICE_COUNT);
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
   const [thicknessScale, setThicknessScale] = useState(1);
+  const [requestedVisibleSliceCount, setRequestedVisibleSliceCount] = useState(DEFAULT_VISIBLE_SLICE_COUNT);
   const [ready, setReady] = useState(false);
   const [study, setStudy] = useState<StudyPayload | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadMessage, setUploadMessage] = useState("选择服务器要处理的医学影像。");
+  const slicePoolSize = study?.slices.length || SLICE_TEXTURE_POOL_SIZE;
+  const visibleSliceCount = clampVisibleSliceCount(requestedVisibleSliceCount, slicePoolSize);
+  const visibleSliceIndices = selectVisibleSliceIndices(slicePoolSize, visibleSliceCount);
+  visibleSliceCountRef.current = visibleSliceCount;
 
   useEffect(() => () => xhrRef.current?.abort(), []);
 
@@ -132,7 +144,8 @@ export default function SliceAtlas() {
     if (!mount) return;
 
     setReady(false);
-    const sliceCount = study?.slices.length || PLACEHOLDER_SLICE_COUNT;
+    const slicePoolCount = study?.slices.length || SLICE_TEXTURE_POOL_SIZE;
+    const initialVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
     const initialActive: number | null = null;
     activeRef.current = initialActive;
     setActiveSlice(initialActive);
@@ -140,9 +153,10 @@ export default function SliceAtlas() {
     const sceneBackground = new THREE.Color(
       readSceneBackgroundColor(window.getComputedStyle(document.documentElement))
     );
+    const displaySceneBackground = sceneBackground.clone().multiplyScalar(ACES_BACKGROUND_COMPENSATION);
     const scene = new THREE.Scene();
-    scene.background = sceneBackground;
-    scene.fog = new THREE.Fog(sceneBackground, 13, 25);
+    scene.background = displaySceneBackground;
+    scene.fog = new THREE.Fog(displaySceneBackground, 13, 25);
 
     const camera = new THREE.OrthographicCamera(-6.7, 6.7, 4.7, -4.7, 0.1, 60);
     camera.position.set(8.8, 5.8, 11.5);
@@ -157,7 +171,7 @@ export default function SliceAtlas() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.autoClear = false;
-    renderer.setClearColor(sceneBackground, 1);
+    renderer.setClearColor(displaySceneBackground, 1);
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
@@ -205,7 +219,7 @@ export default function SliceAtlas() {
       axisScene.add(createAxisLabel(label, origin.clone().add(direction.clone().multiplyScalar(1.42))));
     });
 
-    const layout = createSliceLayout(sliceCount, 0.62);
+    const layout = createSliceLayout(slicePoolCount, 0.62);
     const panelGroups: SliceGroup[] = [];
     const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
     const glassMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
@@ -262,6 +276,7 @@ export default function SliceAtlas() {
       dataTextures.add(thicknessTexture);
 
       const initialVisual = getSliceVisualState(sliceIndex === initialActive);
+      const initialVisibleRank = initialVisibleIndices.indexOf(sliceIndex);
       const sliceDimensions = payload && study
         ? calculateSliceWorldDimensions(study.dimensions[0], study.dimensions[1], study.spacing, 5.1, 3.95)
         : { width: 4.15, height: 3.95, thickness: 0.16, worldUnitsPerMillimeter: 0.16 };
@@ -269,14 +284,15 @@ export default function SliceAtlas() {
         ...base,
         y: getBottomAlignedCenterY(sliceDimensions.height, SLICE_BOTTOM_Y),
         z: getSliceStackZ(
-          sliceIndex,
-          sliceCount,
+          initialVisibleRank >= 0 ? initialVisibleRank : sliceIndex,
+          initialVisibleRank >= 0 ? initialVisibleIndices.length : slicePoolCount,
           sliceDimensions.thickness * thicknessScaleRef.current
         )
       };
       const group = new THREE.Group() as SliceGroup;
       group.position.set(bottomAlignedBase.x, bottomAlignedBase.y, bottomAlignedBase.z);
       group.scale.z = thicknessScaleRef.current;
+      group.visible = initialVisibleRank >= 0;
       group.userData = { base: bottomAlignedBase, sliceIndex };
 
       const sssScaleNode = uniform(11 * initialVisual.sssScale);
@@ -379,7 +395,8 @@ export default function SliceAtlas() {
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(raycastTargets, false)[0];
+      const visibleTargets = raycastTargets.filter((target) => target.parent?.visible);
+      const hit = raycaster.intersectObjects(visibleTargets, false)[0];
       const next = study && typeof hit?.object.userData.sliceIndex === "number" ? hit.object.userData.sliceIndex : null;
 
       if (activeRef.current !== next) {
@@ -398,9 +415,13 @@ export default function SliceAtlas() {
     const selectByKeyboard = (event: KeyboardEvent) => {
       if (!study || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
       event.preventDefault();
+      const visibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
+      if (visibleIndices.length === 0) return;
       const direction = event.key === "ArrowRight" ? 1 : -1;
-      const current = activeRef.current ?? Math.floor(sliceCount / 2);
-      const next = Math.min(sliceCount - 1, Math.max(0, current + direction));
+      const activeRank = activeRef.current === null ? -1 : visibleIndices.indexOf(activeRef.current);
+      const currentRank = activeRank >= 0 ? activeRank : Math.floor(visibleIndices.length / 2);
+      const nextRank = Math.min(visibleIndices.length - 1, Math.max(0, currentRank + direction));
+      const next = visibleIndices[nextRank];
       activeRef.current = next;
       setActiveSlice(next);
     };
@@ -429,23 +450,53 @@ export default function SliceAtlas() {
     let animationFrame = 0;
     let disposed = false;
     let environmentTarget: THREE.RenderTarget | null = null;
+    let visibleLayoutKey = initialVisibleIndices.join(",");
     const render = () => {
       const delta = Math.min(clock.getDelta(), 0.05);
       const elapsed = clock.elapsedTime;
       const damping = reducedMotion ? 30 : 7.8;
+      const currentVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
+      const nextVisibleLayoutKey = currentVisibleIndices.join(",");
+      const shouldSnapVisibleLayout = nextVisibleLayoutKey !== visibleLayoutKey;
 
       panelGroups.forEach((group, index) => {
+        const visibleRank = currentVisibleIndices.indexOf(index);
+        const isVisible = visibleRank >= 0;
+        const wasVisible = group.visible;
+        const inactiveVisual = getSliceVisualState(false);
+        const scaledThickness = baseThicknesses[index] * thicknessScaleRef.current;
+        glassMaterials[index].thickness = scaledThickness;
+
+        if (!isVisible) {
+          group.visible = false;
+          group.position.set(
+            group.userData.base.x,
+            group.userData.base.y,
+            getSliceStackZ(index, slicePoolCount, scaledThickness)
+          );
+          group.scale.set(1, 1, thicknessScaleRef.current);
+          tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
+          sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
+          glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * 2.4;
+          return;
+        }
+
         const isActive = activeRef.current === index;
         const dynamicBase = {
           ...group.userData.base,
           z: getSliceStackZ(
-            index,
-            sliceCount,
-            baseThicknesses[index] * thicknessScaleRef.current
+            visibleRank,
+            currentVisibleIndices.length,
+            scaledThickness
           )
         };
         const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
+        if (!wasVisible || shouldSnapVisibleLayout) {
+          group.position.set(target.x, target.y, target.z);
+          group.scale.set(1, 1, thicknessScaleRef.current);
+        }
+        group.visible = true;
         const lateralWave = isActive && !reducedMotion ? Math.sin(elapsed * 2.2) * 0.025 : 0;
         group.position.x = THREE.MathUtils.damp(group.position.x, target.x + lateralWave, damping, delta);
         group.position.y = THREE.MathUtils.damp(group.position.y, target.y, damping, delta);
@@ -459,7 +510,6 @@ export default function SliceAtlas() {
           damping,
           delta
         );
-        glassMaterials[index].thickness = baseThicknesses[index] * thicknessScaleRef.current;
         const currentIntensity = tissueMaterials[index].color.r;
         tissueMaterials[index].color.setScalar(
           THREE.MathUtils.damp(currentIntensity, study ? visual.tissueIntensity : 0, 6.4, delta)
@@ -477,6 +527,7 @@ export default function SliceAtlas() {
           delta
         );
       });
+      visibleLayoutKey = nextVisibleLayoutKey;
 
       const width = mount.clientWidth;
       const height = mount.clientHeight;
@@ -566,9 +617,9 @@ export default function SliceAtlas() {
     };
   }, [study]);
 
-  const sliceCount = study?.slices.length || PLACEHOLDER_SLICE_COUNT;
-  const displaySlice = activeSlice === null ? "—" : String(activeSlice + 1).padStart(2, "0");
-  const progress = activeSlice === null ? 0 : ((activeSlice + 1) / sliceCount) * 100;
+  const activeVisibleRank = activeSlice === null ? -1 : visibleSliceIndices.indexOf(activeSlice);
+  const displaySlice = activeVisibleRank < 0 ? "—" : String(activeVisibleRank + 1).padStart(2, "0");
+  const progress = activeVisibleRank < 0 ? 0 : ((activeVisibleRank + 1) / visibleSliceCount) * 100;
   const busy = uploadPhase === "uploading" || uploadPhase === "processing";
 
   return (
@@ -634,8 +685,8 @@ export default function SliceAtlas() {
               <span style={{ width: `${uploadPhase === "processing" ? 100 : uploadProgress}%` }} />
             </div>
           ) : null}
-          <label className="thickness-control">
-            <span className="thickness-control-label">
+          <label className="viewer-control">
+            <span className="viewer-control-label">
               <span>SLICE THICKNESS</span>
               <output>{thicknessScale.toFixed(2)}×</output>
             </span>
@@ -650,6 +701,27 @@ export default function SliceAtlas() {
                 const next = clampSliceThicknessScale(Number(event.currentTarget.value));
                 thicknessScaleRef.current = next;
                 setThicknessScale(next);
+              }}
+            />
+          </label>
+          <label className="viewer-control">
+            <span className="viewer-control-label">
+              <span>VISIBLE SLICES</span>
+              <output>{visibleSliceCount} / {slicePoolSize}</output>
+            </span>
+            <input
+              type="range"
+              min={1}
+              max={slicePoolSize}
+              step={1}
+              value={visibleSliceCount}
+              aria-label="显示切片数量"
+              onChange={(event) => {
+                const next = clampVisibleSliceCount(Number(event.currentTarget.value), slicePoolSize);
+                visibleSliceCountRef.current = next;
+                setRequestedVisibleSliceCount(next);
+                activeRef.current = null;
+                setActiveSlice(null);
               }}
             />
           </label>
@@ -670,7 +742,7 @@ export default function SliceAtlas() {
       <aside className="slice-readout" aria-live="polite">
         <span className="readout-label">ACTIVE PLANE</span>
         <span className="readout-number">{displaySlice}</span>
-        <span className="readout-total">/ {String(sliceCount).padStart(2, "0")}</span>
+        <span className="readout-total">/ {String(visibleSliceCount).padStart(2, "0")}</span>
       </aside>
 
       <footer className="atlas-footer">

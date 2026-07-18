@@ -141,18 +141,33 @@ export function getAxialSlice(volume: MedicalVolume, sliceIndex: number): number
 }
 
 export function selectSliceIndices(depth: number, count: number): number[] {
-  if (count <= 0 || depth <= 0) {
+  const safeDepth = Number.isFinite(depth) ? Math.max(0, Math.floor(depth)) : 0;
+  const safeCount = Number.isFinite(count) ? Math.min(safeDepth, Math.max(0, Math.floor(count))) : 0;
+
+  if (safeCount === 0) {
     return [];
   }
 
-  const first = Math.round(depth * 0.15);
-  const last = Math.min(depth - 1, Math.round(depth * 0.825));
+  if (safeCount === safeDepth) {
+    return Array.from({ length: safeDepth }, (_, index) => index);
+  }
 
-  if (count === 1) {
+  let first = Math.round(safeDepth * 0.15);
+  let last = Math.min(safeDepth - 1, Math.round(safeDepth * 0.825));
+
+  if (last - first + 1 < safeCount) {
+    first = 0;
+    last = safeDepth - 1;
+  }
+
+  if (safeCount === 1) {
     return [Math.round((first + last) / 2)];
   }
 
-  return Array.from({ length: count }, (_, index) => Math.round(first + ((last - first) * index) / (count - 1)));
+  return Array.from(
+    { length: safeCount },
+    (_, index) => Math.round(first + ((last - first) * index) / (safeCount - 1))
+  );
 }
 
 export function toVtkImageData(volume: MedicalVolume): VtkImageData {

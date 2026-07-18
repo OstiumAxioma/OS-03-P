@@ -1,6 +1,7 @@
 import type { vtkImageData as VtkImageData } from "@kitware/vtk.js/Common/DataModel/ImageData";
 
 import { createSliceTextureData, selectSliceIndices } from "../medicalVolume";
+import { SLICE_TEXTURE_POOL_SIZE } from "../sliceVisibility";
 import type { IntensityMapping, StudyKind, StudyPayload } from "../studyTypes";
 
 export type DicomFileMetadata = {
@@ -25,8 +26,6 @@ type StudyPayloadOptions = {
   maxSliceCount?: number;
   maxTextureSize?: number;
 };
-
-export const DEFAULT_SLICE_TEXTURE_POOL_SIZE = 12;
 
 export function chooseLargestDicomSeries(records: DicomFileMetadata[]): DicomSeriesSelection {
   if (records.length === 0) {
@@ -113,10 +112,10 @@ export function createStudyPayload(imageData: VtkImageData, options: StudyPayloa
   const dimensions = validateVolumeDimensions(imageData.getDimensions());
   const spacingValues = imageData.getSpacing();
   const spacing: [number, number, number] = [spacingValues[0], spacingValues[1], spacingValues[2]];
-  const sliceCountCandidate = options.maxSliceCount ?? DEFAULT_SLICE_TEXTURE_POOL_SIZE;
+  const sliceCountCandidate = options.maxSliceCount ?? SLICE_TEXTURE_POOL_SIZE;
   const requestedSliceCount = Number.isFinite(sliceCountCandidate)
     ? Math.round(sliceCountCandidate)
-    : DEFAULT_SLICE_TEXTURE_POOL_SIZE;
+    : SLICE_TEXTURE_POOL_SIZE;
   const sliceCount = Math.min(dimensions[2], Math.max(1, requestedSliceCount));
   const indices = selectSliceIndices(dimensions[2], sliceCount);
   const maxTextureSize = options.maxTextureSize ?? 512;

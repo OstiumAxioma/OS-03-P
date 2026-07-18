@@ -36,6 +36,7 @@ describe("createStudyPayload", () => {
     expect(payload.dimensions).toEqual([24, 20, 12]);
     expect(payload.intensityMapping).toBe("normalized");
     expect(payload.slices).toHaveLength(12);
+    expect(payload.slices.map((slice) => slice.sourceIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(payload.slices.every((slice) => slice.width <= 12 && slice.height <= 12)).toBe(true);
 
     const first = payload.slices[0];

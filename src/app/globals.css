@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  --scene-background: #53ffba;
+  --scene-background: #ffffff;
   --ink: #08362b;
   --soft-ink: rgba(8, 54, 43, 0.62);
   --hairline: rgba(8, 54, 43, 0.22);
@@ -35,21 +35,7 @@ a {
   min-height: 100svh;
   overflow: hidden;
   isolation: isolate;
-  background:
-    radial-gradient(circle at 72% 44%, rgba(255, 255, 255, 0.23), transparent 31%),
-    linear-gradient(112deg, rgba(255, 255, 255, 0.08), transparent 38%),
-    var(--scene-background);
-}
-
-.atlas-shell::before {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  pointer-events: none;
-  content: "";
-  opacity: 0.24;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.95' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.18'/%3E%3C/svg%3E");
-  mix-blend-mode: soft-light;
+  background: var(--scene-background);
 }
 
 .atlas-header {
@@ -212,7 +198,7 @@ a {
   transition: width 180ms ease;
 }
 
-.thickness-control {
+.viewer-control {
   display: block;
   margin-top: 16px;
   color: var(--soft-ink);
@@ -221,19 +207,19 @@ a {
   letter-spacing: 0.12em;
 }
 
-.thickness-control-label {
+.viewer-control-label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 7px;
 }
 
-.thickness-control output {
+.viewer-control output {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
 
-.thickness-control input {
+.viewer-control input {
   appearance: none;
   width: 100%;
   height: 2px;
@@ -244,7 +230,7 @@ a {
   cursor: ew-resize;
 }
 
-.thickness-control input::-webkit-slider-thumb {
+.viewer-control input::-webkit-slider-thumb {
   appearance: none;
   width: 12px;
   height: 12px;
@@ -253,7 +239,7 @@ a {
   background: var(--ink);
 }
 
-.thickness-control input::-moz-range-thumb {
+.viewer-control input::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border: 0;
@@ -261,7 +247,7 @@ a {
   background: var(--ink);
 }
 
-.thickness-control input:focus-visible {
+.viewer-control input:focus-visible {
   outline: 1px solid var(--ink);
   outline-offset: 5px;
 }
