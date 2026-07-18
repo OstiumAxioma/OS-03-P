@@ -7,3 +7,4 @@ out/
 coverage/
 *.log
 .env*
+.worktrees/
