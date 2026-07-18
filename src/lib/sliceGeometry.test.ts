@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { calculateSliceWorldDimensions } from "./sliceGeometry";
+import {
+  SLICE_THICKNESS_SCALE_MAX,
+  SLICE_THICKNESS_SCALE_MIN,
+  calculateSliceWorldDimensions,
+  clampSliceThicknessScale,
+  getBottomAlignedCenterY
+} from "./sliceGeometry";
 
 describe("calculateSliceWorldDimensions", () => {
   it("fits the physical in-plane aspect instead of the pixel aspect", () => {
@@ -24,5 +30,25 @@ describe("calculateSliceWorldDimensions", () => {
     expect(dimensions.width).toBeCloseTo(5);
     expect(dimensions.height).toBeCloseTo(2.5);
     expect(dimensions.thickness).toBeCloseTo(0.05);
+  });
+});
+
+describe("clampSliceThicknessScale", () => {
+  it("keeps the user multiplier within the supported slider range", () => {
+    expect(clampSliceThicknessScale(0)).toBe(SLICE_THICKNESS_SCALE_MIN);
+    expect(clampSliceThicknessScale(3.5)).toBe(3.5);
+    expect(clampSliceThicknessScale(100)).toBe(SLICE_THICKNESS_SCALE_MAX);
+    expect(clampSliceThicknessScale(Number.NaN)).toBe(1);
+  });
+});
+
+describe("getBottomAlignedCenterY", () => {
+  it("places different box heights on the same physical Y baseline", () => {
+    const baselineY = -1.975;
+    const shortCenterY = getBottomAlignedCenterY(2.4, baselineY);
+    const tallCenterY = getBottomAlignedCenterY(3.95, baselineY);
+
+    expect(shortCenterY - 2.4 / 2).toBeCloseTo(baselineY);
+    expect(tallCenterY - 3.95 / 2).toBeCloseTo(baselineY);
   });
 });

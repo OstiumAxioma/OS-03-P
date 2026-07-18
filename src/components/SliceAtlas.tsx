@@ -7,9 +7,25 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 
 import { decodeBase64Bytes } from "@/lib/studyClient";
 import type { StudyErrorPayload, StudyKind, StudyPayload } from "@/lib/studyTypes";
-import { createSliceLayout, getSliceTarget, getSliceVisualState, type SliceTransform } from "@/lib/sliceMotion";
+import {
+  SLICE_THICKNESS_SCALE_MAX,
+  SLICE_THICKNESS_SCALE_MIN,
+  SLICE_THICKNESS_SCALE_STEP,
+  calculateSliceWorldDimensions,
+  clampSliceThicknessScale,
+  getBottomAlignedCenterY
+} from "@/lib/sliceGeometry";
+import {
+  createSliceLayout,
+  getSliceStackZ,
+  getSliceTarget,
+  getSliceVisualState,
+  type SliceTransform
+} from "@/lib/sliceMotion";
+import { readSceneBackgroundColor } from "@/lib/sceneTheme";
 
 const PLACEHOLDER_SLICE_COUNT = 7;
+const SLICE_BOTTOM_Y = -3.95 / 2;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -48,7 +64,9 @@ export default function SliceAtlas() {
   const niftiInputRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const activeRef = useRef<number | null>(null);
+  const thicknessScaleRef = useRef(1);
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
+  const [thicknessScale, setThicknessScale] = useState(1);
   const [ready, setReady] = useState(false);
   const [study, setStudy] = useState<StudyPayload | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
@@ -119,14 +137,16 @@ export default function SliceAtlas() {
     activeRef.current = initialActive;
     setActiveSlice(initialActive);
 
+    const sceneBackground = new THREE.Color(
+      readSceneBackgroundColor(window.getComputedStyle(document.documentElement))
+    );
     const scene = new THREE.Scene();
-    scene.background = null;
-    scene.fog = new THREE.Fog(0x53ffba, 13, 25);
+    scene.background = sceneBackground;
+    scene.fog = new THREE.Fog(sceneBackground, 13, 25);
 
     const camera = new THREE.OrthographicCamera(-6.7, 6.7, 4.7, -4.7, 0.1, 60);
-    camera.up.set(0, 0, 1);
-    camera.position.set(8.8, -11.5, 5.8);
-    camera.lookAt(0, 0.12, 0);
+    camera.position.set(8.8, 5.8, 11.5);
+    camera.lookAt(0, 0.1, 0);
 
     const renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -137,16 +157,16 @@ export default function SliceAtlas() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.autoClear = false;
-    renderer.setClearColor(0x53ffba, 0);
+    renderer.setClearColor(sceneBackground, 1);
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
     const hemisphereLight = new THREE.HemisphereLight(0xfff6ef, 0x164a3f, 1.3);
-    hemisphereLight.position.set(0, 0, 1);
+    hemisphereLight.position.set(0, 1, 0);
     scene.add(hemisphereLight);
 
     const keyLight = new THREE.DirectionalLight(0xfff4ec, 3.8);
-    keyLight.position.set(-4, -6, 9);
+    keyLight.position.set(-4, 9, 6);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
     keyLight.shadow.camera.left = -8;
@@ -156,20 +176,19 @@ export default function SliceAtlas() {
     scene.add(keyLight);
 
     const rimLight = new THREE.DirectionalLight(0xff8068, 2.4);
-    rimLight.position.set(7, 4, 3);
+    rimLight.position.set(7, 3, -4);
     scene.add(rimLight);
 
     const axisScene = new THREE.Scene();
     const axisCamera = new THREE.PerspectiveCamera(34, 1, 0.1, 20);
-    axisCamera.up.set(0, 0, 1);
     axisCamera.position.copy(camera.position).normalize().multiplyScalar(4.2);
     axisCamera.lookAt(0, 0, 0);
     const axisColor = 0x061f18;
     const origin = new THREE.Vector3(-0.25, -0.25, -0.25);
     const axes: Array<[THREE.Vector3, string]> = [
       [new THREE.Vector3(1, 0, 0), "X"],
-      [new THREE.Vector3(0, 1, 0), "Y"],
-      [new THREE.Vector3(0, 0, 1), "Z+"]
+      [new THREE.Vector3(0, 1, 0), "Y+"],
+      [new THREE.Vector3(0, 0, 1), "Z"]
     ];
     axes.forEach(([direction, label]) => {
       const arrow = new THREE.ArrowHelper(direction, origin, 1.18, axisColor, 0.2, 0.13);
@@ -189,7 +208,8 @@ export default function SliceAtlas() {
     const layout = createSliceLayout(sliceCount, 0.62);
     const panelGroups: SliceGroup[] = [];
     const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
-    const edgeMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
+    const glassMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
+    const baseThicknesses: number[] = [];
     const sssScaleNodes: Array<ReturnType<typeof uniform>> = [];
     const dataTextures = new Set<THREE.Texture>();
     const raycastTargets: THREE.Object3D[] = [];
@@ -242,10 +262,22 @@ export default function SliceAtlas() {
       dataTextures.add(thicknessTexture);
 
       const initialVisual = getSliceVisualState(sliceIndex === initialActive);
+      const sliceDimensions = payload && study
+        ? calculateSliceWorldDimensions(study.dimensions[0], study.dimensions[1], study.spacing, 5.1, 3.95)
+        : { width: 4.15, height: 3.95, thickness: 0.16, worldUnitsPerMillimeter: 0.16 };
+      const bottomAlignedBase = {
+        ...base,
+        y: getBottomAlignedCenterY(sliceDimensions.height, SLICE_BOTTOM_Y),
+        z: getSliceStackZ(
+          sliceIndex,
+          sliceCount,
+          sliceDimensions.thickness * thicknessScaleRef.current
+        )
+      };
       const group = new THREE.Group() as SliceGroup;
-      group.position.set(base.x, base.y, base.z);
-      group.rotation.z = base.rotationZ;
-      group.userData = { base, sliceIndex };
+      group.position.set(bottomAlignedBase.x, bottomAlignedBase.y, bottomAlignedBase.z);
+      group.scale.z = thicknessScaleRef.current;
+      group.userData = { base: bottomAlignedBase, sliceIndex };
 
       const sssScaleNode = uniform(11 * initialVisual.sssScale);
       const tissueMaterial = new THREE.MeshSSSNodeMaterial({
@@ -274,39 +306,57 @@ export default function SliceAtlas() {
       tissueMaterials.push(tissueMaterial);
       sssScaleNodes.push(sssScaleNode);
 
-      const edgeMaterial = new THREE.MeshPhysicalNodeMaterial({
-        color: 0xd8fff1,
-        roughness: 0.22,
+      const glassMaterial = new THREE.MeshPhysicalNodeMaterial({
+        color: 0xf2fffb,
+        roughness: 0.18,
         metalness: 0,
-        transmission: 0.82,
-        thickness: 0.18,
-        ior: 1.46,
+        transmission: 1,
+        thickness: sliceDimensions.thickness * thicknessScaleRef.current,
+        ior: 1.5,
+        attenuationColor: new THREE.Color(0xffffff),
+        attenuationDistance: Number.POSITIVE_INFINITY,
+        dispersion: 0.035,
         opacity: 1,
-        clearcoat: 0.42,
-        clearcoatRoughness: 0.18,
+        transparent: true,
+        clearcoat: 1,
+        clearcoatRoughness: 0.1,
+        specularIntensity: 1,
+        specularColor: new THREE.Color(0xffffff),
+        iridescence: 0.08,
+        iridescenceIOR: 1.3,
+        iridescenceThicknessRange: [120, 420],
         side: THREE.FrontSide,
-        depthWrite: true,
-        envMapIntensity: initialVisual.edgeOpacity
+        depthWrite: false,
+        envMapIntensity: initialVisual.edgeOpacity * 2.4
       });
-      edgeMaterials.push(edgeMaterial);
+      glassMaterials.push(glassMaterial);
+      baseThicknesses.push(sliceDimensions.thickness);
 
-      const maxWidth = 5.1;
-      const maxHeight = 3.95;
-      const aspect = textureWidth / textureHeight;
-      const boxWidth = aspect > maxWidth / maxHeight ? maxWidth : maxHeight * aspect;
-      const boxHeight = aspect > maxWidth / maxHeight ? maxWidth / aspect : maxHeight;
-      const boxGeometry = new THREE.BoxGeometry(boxWidth, boxHeight, 0.18);
-      const faceMaterials: THREE.Material[] = payload
-        ? [edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, tissueMaterial, tissueMaterial]
-        : [edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial, edgeMaterial];
-      const sliceBox = new THREE.Mesh(boxGeometry, faceMaterials);
-      sliceBox.rotation.x = Math.PI / 2;
-      sliceBox.castShadow = true;
-      sliceBox.receiveShadow = true;
-      sliceBox.renderOrder = sliceIndex;
-      sliceBox.userData.sliceIndex = sliceIndex;
-      group.add(sliceBox);
-      raycastTargets.push(sliceBox);
+      if (payload) {
+        const tissueGeometry = new THREE.BoxGeometry(
+          sliceDimensions.width * 0.965,
+          sliceDimensions.height * 0.965,
+          sliceDimensions.thickness
+        );
+        const tissueVolume = new THREE.Mesh(tissueGeometry, tissueMaterial);
+        tissueVolume.castShadow = true;
+        tissueVolume.receiveShadow = true;
+        tissueVolume.renderOrder = sliceIndex * 2;
+        group.add(tissueVolume);
+      }
+
+      const glassGeometry = new THREE.BoxGeometry(
+        sliceDimensions.width,
+        sliceDimensions.height,
+        sliceDimensions.thickness
+      );
+      const glassBox = new THREE.Mesh(glassGeometry, glassMaterial);
+      glassBox.castShadow = true;
+      glassBox.receiveShadow = false;
+      glassBox.renderOrder = sliceIndex * 2 + 1;
+      glassBox.userData.sliceIndex = sliceIndex;
+      group.add(glassBox);
+      raycastTargets.push(glassBox);
       panelGroups.push(group);
       scene.add(group);
     });
@@ -315,7 +365,8 @@ export default function SliceAtlas() {
       new THREE.PlaneGeometry(30, 30),
       new THREE.ShadowNodeMaterial({ color: 0x176a57, opacity: 0.14, transparent: true })
     );
-    ground.position.z = -2.36;
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -2.36;
     ground.receiveShadow = true;
     scene.add(ground);
 
@@ -385,16 +436,30 @@ export default function SliceAtlas() {
 
       panelGroups.forEach((group, index) => {
         const isActive = activeRef.current === index;
-        const target = getSliceTarget(group.userData.base, isActive);
+        const dynamicBase = {
+          ...group.userData.base,
+          z: getSliceStackZ(
+            index,
+            sliceCount,
+            baseThicknesses[index] * thicknessScaleRef.current
+          )
+        };
+        const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
         const lateralWave = isActive && !reducedMotion ? Math.sin(elapsed * 2.2) * 0.025 : 0;
         group.position.x = THREE.MathUtils.damp(group.position.x, target.x + lateralWave, damping, delta);
         group.position.y = THREE.MathUtils.damp(group.position.y, target.y, damping, delta);
         group.position.z = THREE.MathUtils.damp(group.position.z, target.z, damping, delta);
-        group.rotation.z = THREE.MathUtils.damp(group.rotation.z, target.rotationZ, damping, delta);
         const scaleTarget = isActive ? 1.018 : 1;
-        const scale = THREE.MathUtils.damp(group.scale.x, scaleTarget, damping, delta);
-        group.scale.setScalar(scale);
+        group.scale.x = THREE.MathUtils.damp(group.scale.x, scaleTarget, damping, delta);
+        group.scale.y = THREE.MathUtils.damp(group.scale.y, scaleTarget, damping, delta);
+        group.scale.z = THREE.MathUtils.damp(
+          group.scale.z,
+          thicknessScaleRef.current,
+          damping,
+          delta
+        );
+        glassMaterials[index].thickness = baseThicknesses[index] * thicknessScaleRef.current;
         const currentIntensity = tissueMaterials[index].color.r;
         tissueMaterials[index].color.setScalar(
           THREE.MathUtils.damp(currentIntensity, study ? visual.tissueIntensity : 0, 6.4, delta)
@@ -405,9 +470,9 @@ export default function SliceAtlas() {
           6.4,
           delta
         );
-        edgeMaterials[index].envMapIntensity = THREE.MathUtils.damp(
-          edgeMaterials[index].envMapIntensity,
-          visual.edgeOpacity,
+        glassMaterials[index].envMapIntensity = THREE.MathUtils.damp(
+          glassMaterials[index].envMapIntensity,
+          visual.edgeOpacity * 2.4,
           6.4,
           delta
         );
@@ -421,8 +486,8 @@ export default function SliceAtlas() {
       renderer.render(scene, camera);
       renderer.clearDepth();
       const axisSize = Math.round(THREE.MathUtils.clamp(width * 0.105, 88, 116));
-      renderer.setViewport(width - axisSize - 26, 76, axisSize, axisSize);
-      renderer.setScissor(width - axisSize - 26, 76, axisSize, axisSize);
+      renderer.setViewport(width - axisSize - 26, 88, axisSize, axisSize);
+      renderer.setScissor(width - axisSize - 26, 88, axisSize, axisSize);
       renderer.setScissorTest(true);
       renderer.render(axisScene, axisCamera);
       renderer.setScissorTest(false);
@@ -439,15 +504,18 @@ export default function SliceAtlas() {
 
         const roomEnvironment = new RoomEnvironment();
         const pmremGenerator = new THREE.PMREMGenerator(renderer);
-        environmentTarget = await pmremGenerator.fromSceneAsync(roomEnvironment, 0.04);
-        pmremGenerator.dispose();
-        roomEnvironment.traverse((object) => {
-          if (object instanceof THREE.Mesh) {
-            object.geometry.dispose();
-            const materials = Array.isArray(object.material) ? object.material : [object.material];
-            materials.forEach((material) => material.dispose());
-          }
-        });
+        try {
+          environmentTarget = await pmremGenerator.fromSceneAsync(roomEnvironment, 0.04);
+        } finally {
+          pmremGenerator.dispose();
+          roomEnvironment.traverse((object) => {
+            if (object instanceof THREE.Mesh) {
+              object.geometry.dispose();
+              const materials = Array.isArray(object.material) ? object.material : [object.material];
+              materials.forEach((material) => material.dispose());
+            }
+          });
+        }
         if (disposed) {
           environmentTarget.dispose();
           renderer.dispose();
@@ -566,6 +634,25 @@ export default function SliceAtlas() {
               <span style={{ width: `${uploadPhase === "processing" ? 100 : uploadProgress}%` }} />
             </div>
           ) : null}
+          <label className="thickness-control">
+            <span className="thickness-control-label">
+              <span>SLICE THICKNESS</span>
+              <output>{thicknessScale.toFixed(2)}×</output>
+            </span>
+            <input
+              type="range"
+              min={SLICE_THICKNESS_SCALE_MIN}
+              max={SLICE_THICKNESS_SCALE_MAX}
+              step={SLICE_THICKNESS_SCALE_STEP}
+              value={thicknessScale}
+              aria-label="切片厚度倍率"
+              onChange={(event) => {
+                const next = clampSliceThicknessScale(Number(event.currentTarget.value));
+                thicknessScaleRef.current = next;
+                setThicknessScale(next);
+              }}
+            />
+          </label>
         </div>
       </section>
 
@@ -589,7 +676,7 @@ export default function SliceAtlas() {
       <footer className="atlas-footer">
         <div className="interaction-hint">
           <span className="cursor-icon" aria-hidden="true" />
-          {study ? "HOVER TO ISOLATE · Z+ PULL" : "UPLOAD A STUDY TO BEGIN"}
+          {study ? "HOVER TO ISOLATE · Y+ PULL" : "UPLOAD A STUDY TO BEGIN"}
         </div>
         <div className="slice-track" aria-hidden="true">
           <span style={{ width: `${progress}%` }} />

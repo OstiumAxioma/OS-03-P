@@ -5,6 +5,19 @@ export type SliceWorldDimensions = {
   worldUnitsPerMillimeter: number;
 };
 
+export const SLICE_THICKNESS_SCALE_MIN = 0.25;
+export const SLICE_THICKNESS_SCALE_MAX = 20;
+export const SLICE_THICKNESS_SCALE_STEP = 0.25;
+
+export function clampSliceThicknessScale(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(SLICE_THICKNESS_SCALE_MAX, Math.max(SLICE_THICKNESS_SCALE_MIN, value));
+}
+
+export function getBottomAlignedCenterY(height: number, baselineY: number): number {
+  return baselineY + Math.max(0, height) / 2;
+}
+
 function positiveOrOne(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }

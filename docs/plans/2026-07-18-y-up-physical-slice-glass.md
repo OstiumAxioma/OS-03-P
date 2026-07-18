@@ -29,7 +29,7 @@
 
 1. Change tests so layout stacks along Z and activation preserves Z while moving dominantly along Y+ and retaining X travel.
 2. Run the targeted test and confirm the old Z-up implementation fails.
-3. Rename `rotationZ` to `rotationY` and implement the Y-up layout/target.
+3. Remove per-slice rotation and implement the Y-up layout/target with faces in XY and thickness strictly along Z.
 4. Re-run targeted tests and confirm they pass.
 
 ### Task 3: Build glass and tissue volumes
@@ -44,7 +44,21 @@
 5. Preserve X wave, animate Y+ extraction, raycast the outer glass box, and update debug labels/UI copy.
 6. Run targeted tests and `npm run build`.
 
-### Task 4: Document and visually verify
+### Task 4: Add independent thickness control and fixed gaps
+
+**Files:**
+- Modify: `src/lib/sliceGeometry.ts`
+- Modify: `src/lib/sliceGeometry.test.ts`
+- Modify: `src/lib/sliceMotion.ts`
+- Modify: `src/lib/sliceMotion.test.ts`
+- Modify: `src/components/SliceAtlas.tsx`
+
+1. Add a bounded `0.25x` to `20x` thickness multiplier without changing width or height.
+2. Apply the same Z multiplier to tissue and glass.
+3. Recalculate stack centers using current thickness plus a fixed surface gap.
+4. Unit-test thin and thick layouts to prove their surface gaps remain equal.
+
+### Task 5: Document and visually verify
 
 **Files:**
 - Modify: `README.md`
@@ -53,4 +67,3 @@
 2. Run the complete test suite and production build.
 3. Start the isolated dev server, capture the placeholder state at the reference viewport, upload the DICOM fixture, hover a slice, and inspect console errors.
 4. Compare the result with the supplied glass reference and adjust only material parameters if necessary.
-

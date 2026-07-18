@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { createSliceLayout, getSliceTarget, getSliceVisualState } from "./sliceMotion";
+import {
+  SLICE_STACK_GAP,
+  createSliceLayout,
+  getSliceStackZ,
+  getSliceTarget,
+  getSliceVisualState
+} from "./sliceMotion";
 
 describe("createSliceLayout", () => {
   it("centers an ordered set of upright XY slices along world Z", () => {
@@ -9,7 +15,18 @@ describe("createSliceLayout", () => {
     expect(layout.map((slice) => slice.index)).toEqual([0, 1, 2, 3, 4]);
     expect(layout.map((slice) => slice.z)).toEqual([-1, -0.5, 0, 0.5, 1]);
     expect(layout.every((slice) => slice.y === 0)).toBe(true);
-    expect(layout[0].x).toBeCloseTo(-layout[4].x);
+    expect(layout.every((slice) => slice.x === 0)).toBe(true);
+    expect(layout[0]).not.toHaveProperty("rotationY");
+  });
+});
+
+describe("getSliceStackZ", () => {
+  it("keeps a fixed surface gap when slice thickness changes", () => {
+    const thinDistance = getSliceStackZ(1, 3, 0.2) - getSliceStackZ(0, 3, 0.2);
+    const thickDistance = getSliceStackZ(1, 3, 1.6) - getSliceStackZ(0, 3, 1.6);
+
+    expect(thinDistance - 0.2).toBeCloseTo(SLICE_STACK_GAP);
+    expect(thickDistance - 1.6).toBeCloseTo(SLICE_STACK_GAP);
   });
 });
 
@@ -25,7 +42,6 @@ describe("getSliceTarget", () => {
     expect(active.z).toBe(base.z);
     expect(yTravel).toBeGreaterThan(2);
     expect(yTravel).toBeGreaterThan(xTravel * 2.5);
-    expect(active.rotationY).toBeLessThan(base.rotationY);
   });
 });
 

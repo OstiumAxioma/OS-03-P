@@ -3,8 +3,14 @@ export type SliceTransform = {
   x: number;
   y: number;
   z: number;
-  rotationY: number;
 };
+
+export const SLICE_STACK_GAP = 0.46;
+
+export function getSliceStackZ(index: number, count: number, thickness: number): number {
+  const center = (count - 1) / 2;
+  return (index - center) * (Math.max(0, thickness) + SLICE_STACK_GAP);
+}
 
 export type SliceVisualState = {
   tissueIntensity: number;
@@ -17,10 +23,9 @@ export function createSliceLayout(count: number, spacing: number): SliceTransfor
 
   return Array.from({ length: count }, (_, index) => ({
     index,
-    x: (index - center) * spacing * 0.38,
+    x: 0,
     y: 0,
-    z: (index - center) * spacing,
-    rotationY: -0.08
+    z: (index - center) * spacing
   }));
 }
 
@@ -32,8 +37,7 @@ export function getSliceTarget(base: SliceTransform, active: boolean): SliceTran
   return {
     ...base,
     x: base.x + 0.78,
-    y: base.y + 2.25,
-    rotationY: base.rotationY - 0.025
+    y: base.y + 2.25
   };
 }
 
