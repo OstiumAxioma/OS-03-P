@@ -1,6 +1,6 @@
-# ThreeVTK
+# OS-03-P
 
-ThreeVTK 是一个基于 Next.js、Three.js、vtk.js 与 ITK-Wasm 的医学组织切片可视化项目。浏览器只负责上传和 GPU 三维渲染；DICOM / NIfTI 解码、序列选择、组织着色和纹理生成均在 Node.js 服务器进程中完成。
+OS-03-P 是一个基于 Next.js、Three.js、vtk.js 与 ITK-Wasm 的医学组织切片可视化项目。浏览器只负责上传和 GPU 三维渲染；DICOM / NIfTI 解码、序列选择、组织着色和纹理生成均在 Node.js 服务器进程中完成。
 
 ## 本地运行
 
@@ -13,7 +13,7 @@ ThreeVTK 是一个基于 Next.js、Three.js、vtk.js 与 ITK-Wasm 的医学组�
 首次运行：
 
 ```powershell
-Set-Location D:\Project\ThreeVTK
+Set-Location E:\Desktop\Project\OS-03-P
 npm ci
 npm run dev
 ```

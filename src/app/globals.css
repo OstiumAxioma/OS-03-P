@@ -1,9 +1,9 @@
 :root {
   color-scheme: light;
   --scene-background: #ffffff;
-  --ink: #08362b;
-  --soft-ink: rgba(8, 54, 43, 0.62);
-  --hairline: rgba(8, 54, 43, 0.22);
+  --ink: #050505;
+  --soft-ink: rgba(5, 5, 5, 0.62);
+  --hairline: rgba(5, 5, 5, 0.22);
 }
 
 * {
@@ -36,6 +36,17 @@ a {
   overflow: hidden;
   isolation: isolate;
   background: var(--scene-background);
+  transition:
+    background 220ms ease,
+    color 220ms ease;
+}
+
+.atlas-shell.is-dark {
+  color-scheme: dark;
+  --scene-background: #050505;
+  --ink: #f7f7f7;
+  --soft-ink: rgba(247, 247, 247, 0.62);
+  --hairline: rgba(247, 247, 247, 0.2);
 }
 
 .atlas-header {
@@ -136,9 +147,9 @@ a {
 .upload-actions button {
   min-height: 38px;
   padding: 0 15px;
-  border: 1px solid rgba(8, 54, 43, 0.42);
+  border: 1px solid color-mix(in srgb, var(--ink) 42%, transparent);
   border-radius: 999px;
-  background: rgba(238, 255, 249, 0.35);
+  background: color-mix(in srgb, var(--scene-background) 72%, var(--ink) 7%);
   color: var(--ink);
   font: inherit;
   font-size: 9px;
@@ -153,7 +164,7 @@ a {
 
 .upload-actions button:hover:not(:disabled),
 .upload-actions button:focus-visible {
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, var(--scene-background) 64%, var(--ink) 12%);
   transform: translateY(-2px);
 }
 
@@ -181,14 +192,14 @@ a {
 }
 
 .upload-status.is-error {
-  color: #7d2034;
+  color: var(--ink);
 }
 
 .upload-progress {
   height: 2px;
   margin-top: 9px;
   overflow: hidden;
-  background: rgba(8, 54, 43, 0.18);
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
 }
 
 .upload-progress span {
@@ -225,7 +236,7 @@ a {
   height: 2px;
   margin: 0;
   border: 0;
-  background: rgba(8, 54, 43, 0.28);
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
   accent-color: var(--ink);
   cursor: ew-resize;
 }
@@ -265,7 +276,7 @@ a {
   z-index: 5;
   pointer-events: none;
   content: "";
-  border: 1px solid rgba(8, 54, 43, 0.42);
+  border: 1px solid color-mix(in srgb, var(--ink) 42%, transparent);
   border-radius: 4px;
 }
 
@@ -306,6 +317,265 @@ a {
   min-width: 112px;
   transform: translateY(-50%);
   pointer-events: none;
+}
+
+.lighting-panel {
+  position: absolute;
+  top: 128px;
+  right: clamp(24px, 3.2vw, 52px);
+  z-index: 9;
+  display: grid;
+  gap: 14px;
+  width: 184px;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--scene-background) 58%, transparent);
+  color: var(--soft-ink);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  pointer-events: auto;
+  backdrop-filter: blur(18px);
+}
+
+.atlas-shell.is-dark .lighting-panel {
+  background: rgba(5, 5, 5, 0.58);
+}
+
+.lighting-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ink);
+}
+
+.mode-toggle {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.mode-toggle input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.mode-toggle span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  opacity: 0.74;
+}
+
+.mode-toggle span::after {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  width: 10px;
+  height: 10px;
+  content: "";
+  border-radius: 50%;
+  background: currentColor;
+  transition: transform 160ms ease;
+}
+
+.mode-toggle input:checked + span::after {
+  transform: translateX(14px);
+}
+
+.mode-toggle input:focus-visible + span {
+  outline: 1px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.lighting-knob-wrap {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  padding: 3px 0 1px;
+  --knob-disc-from: #fafafa;
+  --knob-disc-to: #e4e4e7;
+  --knob-face-from: #ffffff;
+  --knob-face-to: #f4f4f5;
+  --knob-hl: rgba(255, 255, 255, 0.95);
+  --knob-tick-outer: rgba(80, 80, 80, 0.55);
+  --knob-tick-inner: rgba(80, 80, 80, 0.3);
+  --knob-marker: #666666;
+  --knob-dot-idle: #d4d4d8;
+  --knob-dot-active: #050505;
+}
+
+.atlas-shell.is-dark .lighting-knob-wrap {
+  --knob-disc-from: #26262a;
+  --knob-disc-to: #161618;
+  --knob-face-from: #2a2a2e;
+  --knob-face-to: #1d1d20;
+  --knob-hl: rgba(255, 255, 255, 0.06);
+  --knob-tick-outer: rgba(200, 200, 215, 0.3);
+  --knob-tick-inner: rgba(200, 200, 215, 0.16);
+  --knob-marker: #a1a1aa;
+  --knob-dot-idle: #3f3f46;
+  --knob-dot-active: #f4f4f5;
+}
+
+.lighting-knob {
+  position: relative;
+  width: 144px;
+  height: 144px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.lighting-knob:active {
+  cursor: grabbing;
+}
+
+.lighting-knob:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 6px;
+  border-radius: 50%;
+}
+
+.lighting-knob-disc,
+.lighting-knob-face,
+.lighting-knob-outer,
+.lighting-knob-inner {
+  position: absolute;
+  inset: 0;
+}
+
+.lighting-knob-disc {
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--knob-disc-from) 0%, var(--knob-disc-to) 100%);
+  box-shadow:
+    0 1px 0 var(--knob-hl) inset,
+    0 -2px 4px rgba(0, 0, 0, 0.18) inset,
+    0 14px 28px -10px rgba(0, 0, 0, 0.35),
+    0 4px 8px rgba(0, 0, 0, 0.12);
+}
+
+.lighting-knob-outer {
+  pointer-events: none;
+  transition: transform 180ms ease-out;
+}
+
+.lighting-knob-outer line {
+  stroke: var(--knob-tick-outer);
+}
+
+.lighting-knob-outer line.is-marker {
+  stroke: var(--knob-marker);
+}
+
+.lighting-knob-face {
+  inset: 12px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--knob-face-from) 0%, var(--knob-face-to) 100%);
+  box-shadow:
+    0 1px 0 var(--knob-hl) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.12) inset,
+    0 0 0 1px rgba(0, 0, 0, 0.12),
+    0 8px 18px -6px rgba(0, 0, 0, 0.3),
+    0 2px 4px rgba(0, 0, 0, 0.12);
+}
+
+.lighting-knob-inner {
+  pointer-events: none;
+}
+
+.lighting-knob-inner line {
+  stroke: var(--knob-tick-inner);
+}
+
+.lighting-knob-inner .is-idle {
+  fill: var(--knob-dot-idle);
+}
+
+.lighting-knob-inner .is-active {
+  fill: var(--knob-dot-active);
+  stroke: var(--knob-dot-active);
+  transition: r 180ms ease;
+}
+
+.lighting-knob-inner .is-active-arc {
+  fill: none;
+  stroke: var(--knob-dot-active);
+}
+
+.lighting-knob-face span,
+.lighting-knob-face output {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.lighting-knob-face span {
+  margin-top: 22px;
+  color: var(--soft-ink);
+}
+
+.lighting-knob-face output {
+  margin-top: -40px;
+  color: var(--ink);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.lighting-slider {
+  display: grid;
+  gap: 7px;
+}
+
+.lighting-slider span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.lighting-slider output {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.lighting-slider input {
+  appearance: none;
+  width: 100%;
+  height: 2px;
+  margin: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+  cursor: ew-resize;
+}
+
+.lighting-slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.lighting-slider input::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.lighting-slider input:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 5px;
 }
 
 .readout-label {
@@ -371,7 +641,7 @@ a {
 .slice-track {
   height: 2px;
   overflow: hidden;
-  background: rgba(8, 54, 43, 0.18);
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
 }
 
 .slice-track span {
@@ -424,6 +694,23 @@ a {
     right: 20px;
     bottom: 88px;
     transform: none;
+  }
+
+  .lighting-panel {
+    top: auto;
+    right: 20px;
+    bottom: 154px;
+    width: 156px;
+    padding: 12px;
+  }
+
+  .lighting-knob {
+    width: 118px;
+    height: 118px;
+  }
+
+  .lighting-knob-face {
+    inset: 10px;
   }
 
   .readout-number {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import * as THREE from "three/webgpu";
 import { float, texture as textureNode, uniform } from "three/tsl";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -23,7 +23,6 @@ import {
   getSliceVisualState,
   type SliceTransform
 } from "@/lib/sliceMotion";
-import { readSceneBackgroundColor } from "@/lib/sceneTheme";
 import {
   DEFAULT_VISIBLE_SLICE_COUNT,
   SLICE_TEXTURE_POOL_SIZE,
@@ -39,6 +38,50 @@ const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.22;
 const BACKGROUND_GLASS_TRANSMISSION = 0.08;
 const BACKGROUND_GLASS_ENVIRONMENT_RATIO = 0.16;
 const TISSUE_SSS_SCALE_BASE = 18;
+const LIGHT_ROTATION_MIN = 0;
+const LIGHT_ROTATION_MAX = 360;
+const HDR_INTENSITY_MIN = 0.25;
+const HDR_INTENSITY_MAX = 2.5;
+const HDR_INTENSITY_STEP = 0.05;
+const EXPOSURE_MIN = 0.55;
+const EXPOSURE_MAX = 1.65;
+const EXPOSURE_STEP = 0.01;
+const GLASS_REFLECTION_MIN = 0.15;
+const GLASS_REFLECTION_MAX = 2.25;
+const GLASS_REFLECTION_STEP = 0.05;
+const HDR_KNOB_DOT_COUNT = 30;
+const HDR_KNOB_OUTER_TICKS = 60;
+const HDR_KNOB_INNER_TICKS = 60;
+const HDR_KNOB_DOT_RADIUS = 88;
+const LIGHT_SCENE_COLORS = {
+  light: { background: "#ffffff", fog: "#ffffff", ground: 0x111111, groundOpacity: 0.12 },
+  dark: { background: "#050505", fog: "#050505", ground: 0x050505, groundOpacity: 0.22 }
+};
+
+type LightingControls = {
+  rotation: number;
+  hdrIntensity: number;
+  exposure: number;
+  glassReflection: number;
+  darkMode: boolean;
+};
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function wrapDegrees(value: number): number {
+  return ((value % 360) + 360) % 360;
+}
+
+function polarPoint(angleDegrees: number, radius: number) {
+  const radians = (angleDegrees * Math.PI) / 180;
+
+  return {
+    x: Number((Math.cos(radians) * radius).toFixed(4)),
+    y: Number((Math.sin(radians) * radius).toFixed(4))
+  };
+}
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -64,7 +107,7 @@ function createAxisLabel(text: string, position: THREE.Vector3): THREE.Sprite {
   const context = canvas.getContext("2d");
   if (context) {
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = "#061f18";
+    context.fillStyle = "#050505";
     context.font = "700 26px Arial";
     context.textAlign = "center";
     context.textBaseline = "middle";
@@ -83,13 +126,24 @@ export default function SliceAtlas() {
   const mountRef = useRef<HTMLDivElement>(null);
   const dicomInputRef = useRef<HTMLInputElement>(null);
   const niftiInputRef = useRef<HTMLInputElement>(null);
+  const hdrKnobRef = useRef<HTMLDivElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const activeRef = useRef<number | null>(null);
+  const hdrKnobDraggingRef = useRef(false);
+  const hdrKnobLastAngleRef = useRef(0);
   const thicknessScaleRef = useRef(1);
   const visibleSliceCountRef = useRef(DEFAULT_VISIBLE_SLICE_COUNT);
+  const lightingRef = useRef<LightingControls>({
+    rotation: 28,
+    hdrIntensity: 1.05,
+    exposure: 1.08,
+    glassReflection: 1,
+    darkMode: false
+  });
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
   const [thicknessScale, setThicknessScale] = useState(1);
   const [requestedVisibleSliceCount, setRequestedVisibleSliceCount] = useState(DEFAULT_VISIBLE_SLICE_COUNT);
+  const [lightingControls, setLightingControls] = useState<LightingControls>(lightingRef.current);
   const [ready, setReady] = useState(false);
   const [study, setStudy] = useState<StudyPayload | null>(null);
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
@@ -99,6 +153,55 @@ export default function SliceAtlas() {
   const visibleSliceCount = clampVisibleSliceCount(requestedVisibleSliceCount, slicePoolSize);
   const visibleSliceIndices = selectVisibleSliceIndices(slicePoolSize, visibleSliceCount);
   visibleSliceCountRef.current = visibleSliceCount;
+
+  const updateLightingControls = (next: Partial<LightingControls>) => {
+    lightingRef.current = { ...lightingRef.current, ...next };
+    setLightingControls(lightingRef.current);
+  };
+
+  const getHdrKnobAngle = (clientX: number, clientY: number) => {
+    const node = hdrKnobRef.current;
+    if (!node) return 0;
+    const rect = node.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    return (Math.atan2(clientY - centerY, clientX - centerX) * 180) / Math.PI;
+  };
+
+  const handleHdrKnobPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    hdrKnobDraggingRef.current = true;
+    hdrKnobLastAngleRef.current = getHdrKnobAngle(event.clientX, event.clientY);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleHdrKnobPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!hdrKnobDraggingRef.current) return;
+    const angle = getHdrKnobAngle(event.clientX, event.clientY);
+    let delta = angle - hdrKnobLastAngleRef.current;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    updateLightingControls({ rotation: wrapDegrees(lightingRef.current.rotation + delta) });
+    hdrKnobLastAngleRef.current = angle;
+  };
+
+  const handleHdrKnobPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    hdrKnobDraggingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  useEffect(() => {
+    const node = hdrKnobRef.current;
+    if (!node) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      updateLightingControls({ rotation: wrapDegrees(lightingRef.current.rotation - event.deltaY / 5) });
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, []);
 
   useEffect(() => () => xhrRef.current?.abort(), []);
 
@@ -165,9 +268,7 @@ export default function SliceAtlas() {
     activeRef.current = initialActive;
     setActiveSlice(initialActive);
 
-    const sceneBackground = new THREE.Color(
-      readSceneBackgroundColor(window.getComputedStyle(document.documentElement))
-    );
+    const sceneBackground = new THREE.Color(LIGHT_SCENE_COLORS.light.background);
     const displaySceneBackground = sceneBackground.clone().multiplyScalar(ACES_BACKGROUND_COMPENSATION);
     const scene = new THREE.Scene();
     scene.background = displaySceneBackground;
@@ -182,7 +283,7 @@ export default function SliceAtlas() {
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
+    renderer.toneMappingExposure = lightingRef.current.exposure;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.autoClear = false;
@@ -207,12 +308,15 @@ export default function SliceAtlas() {
     const rimLight = new THREE.DirectionalLight(0xff8068, 2.4);
     rimLight.position.set(7, 3, -4);
     scene.add(rimLight);
+    const keyLightBasePosition = keyLight.position.clone();
+    const rimLightBasePosition = rimLight.position.clone();
+    const lightRotationAxis = new THREE.Vector3(0, 1, 0);
 
     const axisScene = new THREE.Scene();
     const axisCamera = new THREE.PerspectiveCamera(34, 1, 0.1, 20);
     axisCamera.position.copy(camera.position).normalize().multiplyScalar(4.2);
     axisCamera.lookAt(0, 0, 0);
-    const axisColor = 0x061f18;
+    const axisColor = 0x050505;
     const origin = new THREE.Vector3(-0.25, -0.25, -0.25);
     const axes: Array<[THREE.Vector3, string]> = [
       [new THREE.Vector3(1, 0, 0), "X"],
@@ -438,9 +542,10 @@ export default function SliceAtlas() {
       scene.add(group);
     });
 
+    const groundMaterial = new THREE.ShadowNodeMaterial({ color: LIGHT_SCENE_COLORS.light.ground, opacity: LIGHT_SCENE_COLORS.light.groundOpacity, transparent: true });
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(30, 30),
-      new THREE.ShadowNodeMaterial({ color: 0x176a57, opacity: 0.14, transparent: true })
+      groundMaterial
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -2.36;
@@ -512,13 +617,36 @@ export default function SliceAtlas() {
     let disposed = false;
     let environmentTarget: THREE.RenderTarget | null = null;
     let visibleLayoutKey = initialVisibleIndices.join(",");
+    let previousDarkMode: boolean | null = null;
     const render = () => {
       const delta = Math.min(clock.getDelta(), 0.05);
       const elapsed = clock.elapsedTime;
       const damping = reducedMotion ? 30 : 7.8;
+      const lighting = lightingRef.current;
+      const lightingAngle = THREE.MathUtils.degToRad(lighting.rotation);
+      const sceneColors = lighting.darkMode ? LIGHT_SCENE_COLORS.dark : LIGHT_SCENE_COLORS.light;
+      const sceneColor = new THREE.Color(sceneColors.background).multiplyScalar(ACES_BACKGROUND_COMPENSATION);
+      const fogColor = new THREE.Color(sceneColors.fog).multiplyScalar(ACES_BACKGROUND_COMPENSATION);
       const currentVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
       const nextVisibleLayoutKey = currentVisibleIndices.join(",");
       const shouldSnapVisibleLayout = nextVisibleLayoutKey !== visibleLayoutKey;
+
+      if (previousDarkMode !== lighting.darkMode) {
+        scene.background = sceneColor;
+        if (scene.fog) scene.fog.color.copy(fogColor);
+        renderer.setClearColor(sceneColor, 1);
+        groundMaterial.color.set(sceneColors.ground);
+        groundMaterial.opacity = sceneColors.groundOpacity;
+        previousDarkMode = lighting.darkMode;
+      }
+      renderer.toneMappingExposure = lighting.exposure;
+      scene.environmentIntensity = lighting.hdrIntensity;
+      scene.environmentRotation.y = lightingAngle;
+      keyLight.position.copy(keyLightBasePosition).applyAxisAngle(lightRotationAxis, lightingAngle);
+      rimLight.position.copy(rimLightBasePosition).applyAxisAngle(lightRotationAxis, lightingAngle);
+      hemisphereLight.intensity = 1.3 * lighting.hdrIntensity;
+      keyLight.intensity = 3.8 * lighting.hdrIntensity;
+      rimLight.intensity = 2.4 * lighting.hdrIntensity;
 
       panelGroups.forEach((group, index) => {
         const visibleRank = currentVisibleIndices.indexOf(index);
@@ -546,7 +674,7 @@ export default function SliceAtlas() {
           shellMaterials[index].opacity = study && hasActiveSlice ? 0.16 : 1;
           shellMaterials[index].thickness = visualThickness * thicknessScaleRef.current;
           setMaterialFog(shellMaterials[index], true);
-          shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
+          shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * lighting.glassReflection;
           return;
         }
 
@@ -614,7 +742,7 @@ export default function SliceAtlas() {
         );
         shellMaterials[index].envMapIntensity = THREE.MathUtils.damp(
           shellMaterials[index].envMapIntensity,
-          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * targetEnvRatio,
+          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * targetEnvRatio * lighting.glassReflection,
           6.4,
           delta
         );
@@ -666,6 +794,8 @@ export default function SliceAtlas() {
         }
 
         scene.environment = environmentTarget.texture;
+        scene.environmentIntensity = lightingRef.current.hdrIntensity;
+        scene.environmentRotation.y = THREE.MathUtils.degToRad(lightingRef.current.rotation);
         setReady(true);
         render();
       } catch {
@@ -713,13 +843,15 @@ export default function SliceAtlas() {
   const displaySlice = activeVisibleRank < 0 ? "—" : String(activeVisibleRank + 1).padStart(2, "0");
   const progress = activeVisibleRank < 0 ? 0 : ((activeVisibleRank + 1) / visibleSliceCount) * 100;
   const busy = uploadPhase === "uploading" || uploadPhase === "processing";
+  const hdrKnobValue = (lightingControls.rotation / 360) * 100;
+  const hdrKnobFilledDots = Math.round((hdrKnobValue / 100) * HDR_KNOB_DOT_COUNT);
 
   return (
-    <main className="atlas-shell">
+    <main className={`atlas-shell${lightingControls.darkMode ? " is-dark" : ""}`}>
       <header className="atlas-header">
-        <a className="brand" href="#viewer" aria-label="Lumen medical slice atlas">
+        <a className="brand" href="#viewer" aria-label="OS-03-P medical slice atlas">
           <span className="brand-mark" aria-hidden="true" />
-          <span>LUMEN</span>
+          <span>OS-03-P</span>
         </a>
         <div className="study-meta">
           <span>
@@ -835,6 +967,201 @@ export default function SliceAtlas() {
         <span className="readout-label">ACTIVE PLANE</span>
         <span className="readout-number">{displaySlice}</span>
         <span className="readout-total">/ {String(visibleSliceCount).padStart(2, "0")}</span>
+      </aside>
+
+      <aside className="lighting-panel" aria-label="HDR 光照调试控制">
+        <div className="lighting-panel-header">
+          <span>HDR LIGHT</span>
+          <label className="mode-toggle">
+            <input
+              type="checkbox"
+              checked={lightingControls.darkMode}
+              aria-label="切换黑暗模式"
+              onChange={(event) => updateLightingControls({ darkMode: event.currentTarget.checked })}
+            />
+            <span />
+          </label>
+        </div>
+        <div className="lighting-knob-wrap">
+          <div
+            ref={hdrKnobRef}
+            className="lighting-knob"
+            role="slider"
+            tabIndex={0}
+            aria-label="HDR 光照旋转"
+            aria-valuemin={LIGHT_ROTATION_MIN}
+            aria-valuemax={LIGHT_ROTATION_MAX}
+            aria-valuenow={Math.round(lightingControls.rotation)}
+            onPointerDown={handleHdrKnobPointerDown}
+            onPointerMove={handleHdrKnobPointerMove}
+            onPointerUp={handleHdrKnobPointerUp}
+            onPointerCancel={handleHdrKnobPointerUp}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const direction = event.key === "ArrowRight" ? 1 : -1;
+              updateLightingControls({
+                rotation: wrapDegrees(lightingControls.rotation + direction * 5)
+              });
+            }}
+          >
+            <div className="lighting-knob-disc" />
+            <svg
+              className="lighting-knob-outer"
+              viewBox="-120 -120 240 240"
+              style={{ transform: `rotate(${lightingControls.rotation}deg)` }}
+              aria-hidden="true"
+            >
+              {Array.from({ length: HDR_KNOB_OUTER_TICKS }).map((_, index) => {
+                const angle = (index / HDR_KNOB_OUTER_TICKS) * 360 - 90;
+                const isMarker = index === 0;
+                const outerRadius = 114;
+                const innerRadius = isMarker ? 102 : 108;
+                const outer = polarPoint(angle, outerRadius);
+                const inner = polarPoint(angle, innerRadius);
+
+                return (
+                  <line
+                    key={`outer-${index}`}
+                    x1={outer.x}
+                    y1={outer.y}
+                    x2={inner.x}
+                    y2={inner.y}
+                    strokeWidth={isMarker ? 1.6 : 1}
+                    strokeLinecap="round"
+                    className={isMarker ? "is-marker" : undefined}
+                  />
+                );
+              })}
+            </svg>
+            <div className="lighting-knob-face">
+              <svg className="lighting-knob-inner" viewBox="-100 -100 200 200" aria-hidden="true">
+                {Array.from({ length: HDR_KNOB_INNER_TICKS }).map((_, index) => {
+                  const angle = (index / HDR_KNOB_INNER_TICKS) * 360 - 90;
+                  const outer = polarPoint(angle, 96);
+                  const inner = polarPoint(angle, 93);
+
+                  return (
+                    <line
+                      key={`inner-${index}`}
+                      x1={outer.x}
+                      y1={outer.y}
+                      x2={inner.x}
+                      y2={inner.y}
+                      strokeWidth={0.7}
+                      strokeLinecap="round"
+                    />
+                  );
+                })}
+                {Array.from({ length: HDR_KNOB_DOT_COUNT }).map((_, index) => {
+                  const angle = (index / HDR_KNOB_DOT_COUNT) * 360 - 90;
+                  const point = polarPoint(angle, HDR_KNOB_DOT_RADIUS);
+
+                  return (
+                    <circle
+                      key={`idle-dot-${index}`}
+                      cx={point.x}
+                      cy={point.y}
+                      r={1.6}
+                      className="is-idle"
+                    />
+                  );
+                })}
+                {hdrKnobFilledDots > 1 ? (() => {
+                  const endAngle = ((hdrKnobFilledDots - 1) / HDR_KNOB_DOT_COUNT) * 360 - 90;
+                  const start = polarPoint(-90, HDR_KNOB_DOT_RADIUS);
+                  const end = polarPoint(endAngle, HDR_KNOB_DOT_RADIUS);
+                  const largeArc = endAngle + 90 > 180 ? 1 : 0;
+
+                  return (
+                    <path
+                      d={`M ${start.x} ${start.y} A ${HDR_KNOB_DOT_RADIUS} ${HDR_KNOB_DOT_RADIUS} 0 ${largeArc} 1 ${end.x} ${end.y}`}
+                      strokeWidth={0.6}
+                      strokeOpacity={0.18}
+                      fill="none"
+                      strokeLinecap="round"
+                      className="is-active-arc"
+                    />
+                  );
+                })() : null}
+                {Array.from({ length: hdrKnobFilledDots }).map((_, index) => {
+                  const angle = (index / HDR_KNOB_DOT_COUNT) * 360 - 90;
+                  const point = polarPoint(angle, HDR_KNOB_DOT_RADIUS);
+                  const isLead = index === hdrKnobFilledDots - 1;
+
+                  return (
+                    <circle
+                      key={`active-dot-${index}`}
+                      cx={point.x}
+                      cy={point.y}
+                      r={isLead ? 3.2 : 2.4}
+                      className="is-active"
+                    />
+                  );
+                })}
+              </svg>
+              <span>ROTATE</span>
+              <output>{Math.round(lightingControls.rotation)}°</output>
+            </div>
+          </div>
+        </div>
+        <label className="lighting-slider">
+          <span>
+            HDR INTENSITY
+            <output>{lightingControls.hdrIntensity.toFixed(2)}</output>
+          </span>
+          <input
+            type="range"
+            min={HDR_INTENSITY_MIN}
+            max={HDR_INTENSITY_MAX}
+            step={HDR_INTENSITY_STEP}
+            value={lightingControls.hdrIntensity}
+            aria-label="HDR 强度"
+            onChange={(event) => {
+              updateLightingControls({
+                hdrIntensity: clampRange(Number(event.currentTarget.value), HDR_INTENSITY_MIN, HDR_INTENSITY_MAX)
+              });
+            }}
+          />
+        </label>
+        <label className="lighting-slider">
+          <span>
+            EXPOSURE
+            <output>{lightingControls.exposure.toFixed(2)}</output>
+          </span>
+          <input
+            type="range"
+            min={EXPOSURE_MIN}
+            max={EXPOSURE_MAX}
+            step={EXPOSURE_STEP}
+            value={lightingControls.exposure}
+            aria-label="曝光"
+            onChange={(event) => {
+              updateLightingControls({
+                exposure: clampRange(Number(event.currentTarget.value), EXPOSURE_MIN, EXPOSURE_MAX)
+              });
+            }}
+          />
+        </label>
+        <label className="lighting-slider">
+          <span>
+            GLASS REFLECT
+            <output>{lightingControls.glassReflection.toFixed(2)}</output>
+          </span>
+          <input
+            type="range"
+            min={GLASS_REFLECTION_MIN}
+            max={GLASS_REFLECTION_MAX}
+            step={GLASS_REFLECTION_STEP}
+            value={lightingControls.glassReflection}
+            aria-label="玻璃反射强度"
+            onChange={(event) => {
+              updateLightingControls({
+                glassReflection: clampRange(Number(event.currentTarget.value), GLASS_REFLECTION_MIN, GLASS_REFLECTION_MAX)
+              });
+            }}
+          />
+        </label>
       </aside>
 
       <footer className="atlas-footer">
