@@ -5,7 +5,8 @@ import {
   SLICE_THICKNESS_SCALE_MIN,
   calculateSliceWorldDimensions,
   clampSliceThicknessScale,
-  getBottomAlignedCenterY
+  getBottomAlignedCenterY,
+  getVisibleTissueExtrusionThickness
 } from "./sliceGeometry";
 
 describe("calculateSliceWorldDimensions", () => {
@@ -50,5 +51,12 @@ describe("getBottomAlignedCenterY", () => {
 
     expect(shortCenterY - 2.4 / 2).toBeCloseTo(baselineY);
     expect(tallCenterY - 3.95 / 2).toBeCloseTo(baselineY);
+  });
+});
+
+describe("getVisibleTissueExtrusionThickness", () => {
+  it("keeps physically thin medical slices visibly extruded", () => {
+    expect(getVisibleTissueExtrusionThickness(0.02)).toBeGreaterThan(0.3);
+    expect(getVisibleTissueExtrusionThickness(0.08)).toBeGreaterThan(1);
   });
 });

@@ -13,7 +13,8 @@ import {
   SLICE_THICKNESS_SCALE_STEP,
   calculateSliceWorldDimensions,
   clampSliceThicknessScale,
-  getBottomAlignedCenterY
+  getBottomAlignedCenterY,
+  getVisibleTissueExtrusionThickness
 } from "@/lib/sliceGeometry";
 import {
   createSliceLayout,
@@ -29,12 +30,12 @@ import {
   clampVisibleSliceCount,
   selectVisibleSliceIndices
 } from "@/lib/sliceVisibility";
+import { createTissueExtrusionSurface } from "@/lib/tissueExtrusion";
 
 const SLICE_BOTTOM_Y = -3.95 / 2;
 const ACES_BACKGROUND_COMPENSATION = 12;
-const GLASS_EDGE_ENVIRONMENT_GAIN = 4.2;
-const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.05;
-const TISSUE_THICKNESS_RATIO = 1.08;
+const RESIN_EDGE_ENVIRONMENT_GAIN = 1.35;
+const RESIN_COLOR = 0xffdb9f;
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
 
@@ -233,7 +234,7 @@ export default function SliceAtlas() {
     const layout = createSliceLayout(slicePoolCount, 0.62);
     const panelGroups: SliceGroup[] = [];
     const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
-    const glassMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
+    const shellMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
     const baseThicknesses: number[] = [];
     const sssScaleNodes: Array<ReturnType<typeof uniform>> = [];
     const dataTextures = new Set<THREE.Texture>();
@@ -273,19 +274,6 @@ export default function SliceAtlas() {
       roughnessTexture.needsUpdate = true;
       dataTextures.add(roughnessTexture);
 
-      const thicknessTexture = new THREE.DataTexture(
-        thicknessBytes,
-        textureWidth,
-        textureHeight,
-        THREE.RedFormat,
-        THREE.UnsignedByteType
-      );
-      thicknessTexture.minFilter = THREE.LinearFilter;
-      thicknessTexture.magFilter = THREE.LinearFilter;
-      thicknessTexture.generateMipmaps = false;
-      thicknessTexture.needsUpdate = true;
-      dataTextures.add(thicknessTexture);
-
       const initialVisual = getSliceVisualState(sliceIndex === initialActive);
       const initialVisibleRank = initialVisibleIndices.indexOf(sliceIndex);
       const sliceDimensions = payload && study
@@ -297,7 +285,7 @@ export default function SliceAtlas() {
         z: getSliceStackZ(
           initialVisibleRank >= 0 ? initialVisibleRank : sliceIndex,
           initialVisibleRank >= 0 ? initialVisibleIndices.length : slicePoolCount,
-          sliceDimensions.thickness * TISSUE_THICKNESS_RATIO * thicknessScaleRef.current
+          getVisibleTissueExtrusionThickness(sliceDimensions.thickness) * thicknessScaleRef.current
         )
       };
       const group = new THREE.Group() as SliceGroup;
@@ -309,81 +297,114 @@ export default function SliceAtlas() {
       const sssScaleNode = uniform(11 * initialVisual.sssScale);
       const tissueMaterial = new THREE.MeshSSSNodeMaterial({
         color: new THREE.Color().setScalar(initialVisual.tissueIntensity),
-        map: diffuseTexture,
         roughnessMap: roughnessTexture,
         roughness: 0.62,
         metalness: 0,
-        clearcoat: 0.08,
-        clearcoatRoughness: 0.56,
-        sheen: 0.16,
+        clearcoat: 0.18,
+        clearcoatRoughness: 0.48,
+        sheen: 0.12,
         sheenColor: new THREE.Color(0xff6f61),
         sheenRoughness: 0.82,
+        vertexColors: true,
         transparent: false,
         opacity: 1,
-        alphaTest: 0.08,
         side: THREE.FrontSide,
         depthWrite: true
       });
-      tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
+      tissueMaterial.thicknessColorNode = float(1);
       tissueMaterial.thicknessDistortionNode = float(0.16);
       tissueMaterial.thicknessAmbientNode = float(0.08);
-      tissueMaterial.thicknessAttenuationNode = textureNode(thicknessTexture).r.mul(float(0.72)) as unknown as typeof tissueMaterial.thicknessAttenuationNode;
+      tissueMaterial.thicknessAttenuationNode = float(0.5) as unknown as typeof tissueMaterial.thicknessAttenuationNode;
       tissueMaterial.thicknessPowerNode = float(2.1);
       tissueMaterial.thicknessScaleNode = sssScaleNode;
       tissueMaterials.push(tissueMaterial);
       sssScaleNodes.push(sssScaleNode);
 
-      const glassMaterial = new THREE.MeshPhysicalNodeMaterial({
-        color: 0xffffff,
-        roughness: 0.08,
+      const shellMaterial = new THREE.MeshPhysicalNodeMaterial({
+        color: RESIN_COLOR,
+        roughness: 0.48,
         metalness: 0,
-        transmission: 1,
-        thickness: sliceDimensions.thickness * thicknessScaleRef.current,
-        ior: 1.52,
-        attenuationColor: new THREE.Color(0xffffff),
-        attenuationDistance: Number.POSITIVE_INFINITY,
-        dispersion: 4.5,
-        opacity: 1,
+        transmission: 0,
+        opacity: payload ? 0.24 : 0.74,
         transparent: true,
-        clearcoat: 1,
-        clearcoatRoughness: 0.035,
-        specularIntensity: 1.5,
-        specularColor: new THREE.Color(0xffffff),
-        iridescence: 1,
-        iridescenceIOR: 1.7,
-        iridescenceThicknessRange: [80, 920],
+        clearcoat: 0.14,
+        clearcoatRoughness: 0.42,
+        specularIntensity: 0.32,
+        specularColor: new THREE.Color(RESIN_COLOR),
         side: THREE.FrontSide,
         depthWrite: false,
-        envMapIntensity: initialVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN
+        envMapIntensity: initialVisual.edgeOpacity * RESIN_EDGE_ENVIRONMENT_GAIN
       });
-      glassMaterials.push(glassMaterial);
+      shellMaterials.push(shellMaterial);
       baseThicknesses.push(sliceDimensions.thickness);
 
       if (payload) {
-        const tissueGeometry = new THREE.BoxGeometry(
-          sliceDimensions.width * 0.965,
-          sliceDimensions.height * 0.965,
-          sliceDimensions.thickness * TISSUE_THICKNESS_RATIO
-        );
+        const surface = createTissueExtrusionSurface({
+          width: textureWidth,
+          height: textureHeight,
+          diffuse: diffuseBytes,
+          roughness: roughnessBytes,
+          thickness: thicknessBytes
+        });
+        const tissueGeometry = new THREE.BufferGeometry();
+        tissueGeometry.setAttribute("position", new THREE.BufferAttribute(surface.positions, 3));
+        tissueGeometry.setAttribute("color", new THREE.BufferAttribute(surface.colors, 3));
+        tissueGeometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
+        tissueGeometry.computeVertexNormals();
         const tissueVolume = new THREE.Mesh(tissueGeometry, tissueMaterial);
+        const tissueDepth = getVisibleTissueExtrusionThickness(sliceDimensions.thickness);
+
+        tissueVolume.scale.set(sliceDimensions.width * 0.965, sliceDimensions.height * 0.965, tissueDepth);
         tissueVolume.castShadow = true;
         tissueVolume.receiveShadow = true;
         tissueVolume.renderOrder = sliceIndex * 2;
         group.add(tissueVolume);
+
+        const tissueFaceMaterial = new THREE.MeshSSSNodeMaterial({
+          color: new THREE.Color().setScalar(initialVisual.tissueIntensity),
+          map: diffuseTexture,
+          roughnessMap: roughnessTexture,
+          roughness: 0.62,
+          metalness: 0,
+          clearcoat: 0.08,
+          clearcoatRoughness: 0.56,
+          sheen: 0.16,
+          sheenColor: new THREE.Color(0xff6f61),
+          sheenRoughness: 0.82,
+          transparent: false,
+          alphaTest: 0.08,
+          side: THREE.FrontSide,
+          depthWrite: true
+        });
+        tissueFaceMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
+        tissueFaceMaterial.thicknessDistortionNode = float(0.16);
+        tissueFaceMaterial.thicknessAmbientNode = float(0.08);
+        tissueFaceMaterial.thicknessAttenuationNode = float(0.5) as unknown as typeof tissueFaceMaterial.thicknessAttenuationNode;
+        tissueFaceMaterial.thicknessPowerNode = float(2.1);
+        tissueFaceMaterial.thicknessScaleNode = sssScaleNode;
+        const tissueFace = new THREE.Mesh(
+          new THREE.PlaneGeometry(sliceDimensions.width * 0.965, sliceDimensions.height * 0.965),
+          tissueFaceMaterial
+        );
+        tissueFace.position.z = tissueDepth / 2 + 0.002;
+        tissueFace.castShadow = false;
+        tissueFace.receiveShadow = true;
+        tissueFace.renderOrder = sliceIndex * 2 + 1;
+        group.add(tissueFace);
       }
 
-      const glassGeometry = new THREE.BoxGeometry(
+      const shellGeometry = new THREE.BoxGeometry(
         sliceDimensions.width,
         sliceDimensions.height,
-        sliceDimensions.thickness
+        getVisibleTissueExtrusionThickness(sliceDimensions.thickness)
       );
-      const glassBox = new THREE.Mesh(glassGeometry, glassMaterial);
-      glassBox.castShadow = true;
-      glassBox.receiveShadow = false;
-      glassBox.renderOrder = sliceIndex * 2 + 1;
-      glassBox.userData.sliceIndex = sliceIndex;
-      group.add(glassBox);
-      raycastTargets.push(glassBox);
+      const shellBox = new THREE.Mesh(shellGeometry, shellMaterial);
+      shellBox.castShadow = true;
+      shellBox.receiveShadow = false;
+      shellBox.renderOrder = sliceIndex * 2 + 2;
+      shellBox.userData.sliceIndex = sliceIndex;
+      group.add(shellBox);
+      raycastTargets.push(shellBox);
       panelGroups.push(group);
       scene.add(group);
     });
@@ -475,8 +496,8 @@ export default function SliceAtlas() {
         const isVisible = visibleRank >= 0;
         const wasVisible = group.visible;
         const inactiveVisual = getSliceVisualState(false);
-        const glassScaledThickness = baseThicknesses[index] * thicknessScaleRef.current;
-        const stackThickness = glassScaledThickness * TISSUE_THICKNESS_RATIO;
+        const visualThickness = getVisibleTissueExtrusionThickness(baseThicknesses[index]);
+        const stackThickness = visualThickness * thicknessScaleRef.current;
 
         if (!isVisible) {
           group.visible = false;
@@ -489,15 +510,15 @@ export default function SliceAtlas() {
           tissueMaterials[index].color.setScalar(study ? inactiveVisual.tissueIntensity : 0);
           sssScaleNodes[index].value = 11 * inactiveVisual.sssScale;
           setMaterialFog(tissueMaterials[index], true);
-          glassMaterials[index].thickness = glassScaledThickness;
-          setMaterialFog(glassMaterials[index], true);
-          glassMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
+          shellMaterials[index].opacity = study ? 0.2 : 0.74;
+          setMaterialFog(shellMaterials[index], true);
+          shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * RESIN_EDGE_ENVIRONMENT_GAIN;
           return;
         }
 
         const isActive = activeRef.current === index;
         setMaterialFog(tissueMaterials[index], !isActive);
-        setMaterialFog(glassMaterials[index], !isActive);
+        setMaterialFog(shellMaterials[index], !isActive);
         const dynamicBase = {
           ...group.userData.base,
           z: getSliceStackZ(
@@ -508,7 +529,6 @@ export default function SliceAtlas() {
         };
         const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
-        const opticalThicknessTarget = glassScaledThickness * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
         if (!wasVisible || shouldSnapVisibleLayout) {
           group.position.set(target.x, target.y, target.z);
           group.scale.set(1, 1, thicknessScaleRef.current);
@@ -527,12 +547,6 @@ export default function SliceAtlas() {
           damping,
           delta
         );
-        glassMaterials[index].thickness = THREE.MathUtils.damp(
-          glassMaterials[index].thickness,
-          opticalThicknessTarget,
-          damping,
-          delta
-        );
         const currentIntensity = tissueMaterials[index].color.r;
         tissueMaterials[index].color.setScalar(
           THREE.MathUtils.damp(currentIntensity, study ? visual.tissueIntensity : 0, 6.4, delta)
@@ -543,9 +557,15 @@ export default function SliceAtlas() {
           6.4,
           delta
         );
-        glassMaterials[index].envMapIntensity = THREE.MathUtils.damp(
-          glassMaterials[index].envMapIntensity,
-          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN,
+        shellMaterials[index].opacity = THREE.MathUtils.damp(
+          shellMaterials[index].opacity,
+          study ? (isActive ? 0.12 : 0.22) : 0.74,
+          6.4,
+          delta
+        );
+        shellMaterials[index].envMapIntensity = THREE.MathUtils.damp(
+          shellMaterials[index].envMapIntensity,
+          visual.edgeOpacity * RESIN_EDGE_ENVIRONMENT_GAIN,
           6.4,
           delta
         );

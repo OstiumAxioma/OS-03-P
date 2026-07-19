@@ -8,6 +8,8 @@ export type SliceWorldDimensions = {
 export const SLICE_THICKNESS_SCALE_MIN = 0.25;
 export const SLICE_THICKNESS_SCALE_MAX = 20;
 export const SLICE_THICKNESS_SCALE_STEP = 0.25;
+export const TISSUE_EXTRUSION_VISIBLE_THICKNESS_MIN = 0.32;
+export const TISSUE_EXTRUSION_VISIBLE_THICKNESS_RATIO = 14;
 
 export function clampSliceThicknessScale(value: number): number {
   if (!Number.isFinite(value)) return 1;
@@ -16,6 +18,13 @@ export function clampSliceThicknessScale(value: number): number {
 
 export function getBottomAlignedCenterY(height: number, baselineY: number): number {
   return baselineY + Math.max(0, height) / 2;
+}
+
+export function getVisibleTissueExtrusionThickness(physicalSliceThickness: number): number {
+  return Math.max(
+    TISSUE_EXTRUSION_VISIBLE_THICKNESS_MIN,
+    Math.max(0, physicalSliceThickness) * TISSUE_EXTRUSION_VISIBLE_THICKNESS_RATIO
+  );
 }
 
 function positiveOrOne(value: number): number {
