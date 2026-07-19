@@ -6,13 +6,14 @@ export type SliceWorldDimensions = {
 };
 
 export const SLICE_THICKNESS_SCALE_MIN = 0.25;
-export const SLICE_THICKNESS_SCALE_MAX = 20;
+export const SLICE_THICKNESS_SCALE_MAX = 5;
 export const SLICE_THICKNESS_SCALE_STEP = 0.25;
+export const DEFAULT_SLICE_THICKNESS_SCALE = 0.25;
 export const TISSUE_EXTRUSION_VISIBLE_THICKNESS_MIN = 0.32;
 export const TISSUE_EXTRUSION_VISIBLE_THICKNESS_RATIO = 14;
 
 export function clampSliceThicknessScale(value: number): number {
-  if (!Number.isFinite(value)) return 1;
+  if (!Number.isFinite(value)) return DEFAULT_SLICE_THICKNESS_SCALE;
   return Math.min(SLICE_THICKNESS_SCALE_MAX, Math.max(SLICE_THICKNESS_SCALE_MIN, value));
 }
 

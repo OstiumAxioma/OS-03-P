@@ -25,18 +25,18 @@ describe("validateVolumeDimensions", () => {
 });
 
 describe("createStudyPayload", () => {
-  it("creates a twelve-layer bounded texture pool from vtk image data", () => {
-    const imageData = toVtkImageData(createMedicalVolume(24, 20, 12));
+  it("creates one texture layer for every source slice by default", () => {
+    const imageData = toVtkImageData(createMedicalVolume(24, 20, 15));
     const payload = createStudyPayload(imageData, {
       sourceType: "nifti",
       modality: "NIFTI",
       maxTextureSize: 12
     });
 
-    expect(payload.dimensions).toEqual([24, 20, 12]);
+    expect(payload.dimensions).toEqual([24, 20, 15]);
     expect(payload.intensityMapping).toBe("normalized");
-    expect(payload.slices).toHaveLength(12);
-    expect(payload.slices.map((slice) => slice.sourceIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(payload.slices).toHaveLength(15);
+    expect(payload.slices.map((slice) => slice.sourceIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(payload.slices.every((slice) => slice.width <= 12 && slice.height <= 12)).toBe(true);
 
     const first = payload.slices[0];

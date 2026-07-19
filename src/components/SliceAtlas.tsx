@@ -8,6 +8,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { decodeBase64Bytes } from "@/lib/studyClient";
 import type { StudyErrorPayload, StudyKind, StudyPayload } from "@/lib/studyTypes";
 import {
+  DEFAULT_SLICE_THICKNESS_SCALE,
   SLICE_THICKNESS_SCALE_MAX,
   SLICE_THICKNESS_SCALE_MIN,
   SLICE_THICKNESS_SCALE_STEP,
@@ -33,10 +34,15 @@ import { createTissueExtrusionSurface } from "@/lib/tissueExtrusion";
 
 const SLICE_BOTTOM_Y = -3.95 / 2;
 const ACES_BACKGROUND_COMPENSATION = 12;
-const GLASS_EDGE_ENVIRONMENT_GAIN = 2.35;
-const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.22;
-const BACKGROUND_GLASS_TRANSMISSION = 0.08;
-const BACKGROUND_GLASS_ENVIRONMENT_RATIO = 0.16;
+const GLASS_EDGE_ENVIRONMENT_GAIN = 2.05;
+const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.24;
+const ACRYLIC_TRANSMISSION = 0.82;
+const ACRYLIC_OPACITY = 0.68;
+const BACKGROUND_GLASS_TRANSMISSION = 0.06;
+const BACKGROUND_GLASS_ENVIRONMENT_RATIO = 0.2;
+const BACKGROUND_ACRYLIC_OPACITY = 0.26;
+const ACRYLIC_EDGE_OPACITY = 0.24;
+const ACTIVE_ACRYLIC_EDGE_OPACITY = 0.62;
 const TISSUE_SSS_SCALE_BASE = 18;
 const LIGHT_ROTATION_MIN = 0;
 const LIGHT_ROTATION_MAX = 360;
@@ -131,7 +137,7 @@ export default function SliceAtlas() {
   const activeRef = useRef<number | null>(null);
   const hdrKnobDraggingRef = useRef(false);
   const hdrKnobLastAngleRef = useRef(0);
-  const thicknessScaleRef = useRef(1);
+  const thicknessScaleRef = useRef(DEFAULT_SLICE_THICKNESS_SCALE);
   const visibleSliceCountRef = useRef(DEFAULT_VISIBLE_SLICE_COUNT);
   const lightingRef = useRef<LightingControls>({
     rotation: 28,
@@ -141,7 +147,7 @@ export default function SliceAtlas() {
     darkMode: false
   });
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
-  const [thicknessScale, setThicknessScale] = useState(1);
+  const [thicknessScale, setThicknessScale] = useState(DEFAULT_SLICE_THICKNESS_SCALE);
   const [requestedVisibleSliceCount, setRequestedVisibleSliceCount] = useState(DEFAULT_VISIBLE_SLICE_COUNT);
   const [lightingControls, setLightingControls] = useState<LightingControls>(lightingRef.current);
   const [ready, setReady] = useState(false);
@@ -343,6 +349,7 @@ export default function SliceAtlas() {
     const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
     const tissueMaterialGroups: THREE.MeshSSSNodeMaterial[][] = [];
     const shellMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
+    const shellEdgeMaterials: THREE.LineBasicMaterial[] = [];
     const baseThicknesses: number[] = [];
     const sssScaleNodes: Array<ReturnType<typeof uniform>> = [];
     const dataTextures = new Set<THREE.Texture>();
@@ -445,23 +452,23 @@ export default function SliceAtlas() {
 
       const shellMaterial = new THREE.MeshPhysicalNodeMaterial({
         color: 0xffffff,
-        roughness: 0.075,
+        roughness: 0.135,
         metalness: 0,
-        transmission: payload ? 1 : 0.42,
+        transmission: payload ? ACRYLIC_TRANSMISSION : 0.28,
         thickness: sliceDimensions.thickness * thicknessScaleRef.current,
-        ior: 1.5,
+        ior: 1.49,
         attenuationColor: new THREE.Color(0xffffff),
-        attenuationDistance: 12,
-        dispersion: 0.28,
-        opacity: 1,
+        attenuationDistance: 9,
+        dispersion: 1.45,
+        opacity: payload ? ACRYLIC_OPACITY : 0.52,
         transparent: true,
-        clearcoat: 0.82,
-        clearcoatRoughness: 0.08,
-        specularIntensity: 0.72,
+        clearcoat: 0.7,
+        clearcoatRoughness: 0.13,
+        specularIntensity: 0.68,
         specularColor: new THREE.Color(0xffffff),
-        iridescence: 0.08,
-        iridescenceIOR: 1.45,
-        iridescenceThicknessRange: [80, 260],
+        iridescence: 0.46,
+        iridescenceIOR: 1.62,
+        iridescenceThicknessRange: [90, 520],
         side: THREE.FrontSide,
         depthWrite: false,
         envMapIntensity: initialVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN
@@ -532,11 +539,22 @@ export default function SliceAtlas() {
         getVisibleTissueExtrusionThickness(sliceDimensions.thickness)
       );
       const shellBox = new THREE.Mesh(shellGeometry, shellMaterial);
+      const shellEdgeMaterial = new THREE.LineBasicMaterial({
+        color: 0x050505,
+        transparent: true,
+        opacity: ACRYLIC_EDGE_OPACITY,
+        depthTest: true,
+        depthWrite: false
+      });
+      const shellEdges = new THREE.LineSegments(new THREE.EdgesGeometry(shellGeometry, 32), shellEdgeMaterial);
+      shellEdges.renderOrder = sliceIndex * 2 + 3;
+      shellEdgeMaterials.push(shellEdgeMaterial);
       shellBox.castShadow = true;
       shellBox.receiveShadow = false;
       shellBox.renderOrder = sliceIndex * 2 + 2;
       shellBox.userData.sliceIndex = sliceIndex;
       group.add(shellBox);
+      group.add(shellEdges);
       raycastTargets.push(shellBox);
       panelGroups.push(group);
       scene.add(group);
@@ -670,17 +688,19 @@ export default function SliceAtlas() {
             setMaterialFog(material, true);
           });
           sssScaleNodes[index].value = TISSUE_SSS_SCALE_BASE * inactiveVisual.sssScale;
-          shellMaterials[index].transmission = study && hasActiveSlice ? BACKGROUND_GLASS_TRANSMISSION : 1;
-          shellMaterials[index].opacity = study && hasActiveSlice ? 0.16 : 1;
+          shellMaterials[index].transmission = study && hasActiveSlice ? BACKGROUND_GLASS_TRANSMISSION : ACRYLIC_TRANSMISSION;
+          shellMaterials[index].opacity = study && hasActiveSlice ? BACKGROUND_ACRYLIC_OPACITY : ACRYLIC_OPACITY;
           shellMaterials[index].thickness = visualThickness * thicknessScaleRef.current;
-          setMaterialFog(shellMaterials[index], true);
+          setMaterialFog(shellMaterials[index], false);
           shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * lighting.glassReflection;
+          shellEdgeMaterials[index].color.set(lighting.darkMode ? 0xf7f7f7 : 0x050505);
+          shellEdgeMaterials[index].opacity = study && hasActiveSlice ? 0.08 : ACRYLIC_EDGE_OPACITY;
           return;
         }
 
         const isActive = activeRef.current === index;
         tissueMaterialGroups[index].forEach((material) => setMaterialFog(material, !isActive));
-        setMaterialFog(shellMaterials[index], !isActive);
+        setMaterialFog(shellMaterials[index], false);
         const dynamicBase = {
           ...group.userData.base,
           z: getSliceStackZ(
@@ -718,13 +738,14 @@ export default function SliceAtlas() {
           6.4,
           delta
         );
-        const targetTransmission = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_TRANSMISSION : 1;
-        const targetGlassOpacity = study && hasActiveSlice && !isActive ? 0.16 : 1;
+        const targetAcrylicTransmission = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_TRANSMISSION : ACRYLIC_TRANSMISSION;
+        const targetGlassOpacity = study && hasActiveSlice && !isActive ? BACKGROUND_ACRYLIC_OPACITY : ACRYLIC_OPACITY;
+        const targetEdgeOpacity = isActive ? ACTIVE_ACRYLIC_EDGE_OPACITY : (study && hasActiveSlice ? 0.1 : ACRYLIC_EDGE_OPACITY);
         const targetEnvRatio = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_ENVIRONMENT_RATIO : 1;
         const targetOpticalThickness = visualThickness * thicknessScaleRef.current * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
         shellMaterials[index].transmission = THREE.MathUtils.damp(
           shellMaterials[index].transmission,
-          targetTransmission,
+          targetAcrylicTransmission,
           6.4,
           delta
         );
@@ -743,6 +764,13 @@ export default function SliceAtlas() {
         shellMaterials[index].envMapIntensity = THREE.MathUtils.damp(
           shellMaterials[index].envMapIntensity,
           visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * targetEnvRatio * lighting.glassReflection,
+          6.4,
+          delta
+        );
+        shellEdgeMaterials[index].color.set(lighting.darkMode ? 0xf7f7f7 : 0x050505);
+        shellEdgeMaterials[index].opacity = THREE.MathUtils.damp(
+          shellEdgeMaterials[index].opacity,
+          targetEdgeOpacity,
           6.4,
           delta
         );

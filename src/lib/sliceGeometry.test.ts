@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_SLICE_THICKNESS_SCALE,
   SLICE_THICKNESS_SCALE_MAX,
   SLICE_THICKNESS_SCALE_MIN,
   calculateSliceWorldDimensions,
@@ -39,7 +40,7 @@ describe("clampSliceThicknessScale", () => {
     expect(clampSliceThicknessScale(0)).toBe(SLICE_THICKNESS_SCALE_MIN);
     expect(clampSliceThicknessScale(3.5)).toBe(3.5);
     expect(clampSliceThicknessScale(100)).toBe(SLICE_THICKNESS_SCALE_MAX);
-    expect(clampSliceThicknessScale(Number.NaN)).toBe(1);
+    expect(clampSliceThicknessScale(Number.NaN)).toBe(DEFAULT_SLICE_THICKNESS_SCALE);
   });
 });
 
