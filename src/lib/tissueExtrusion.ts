@@ -20,6 +20,7 @@ export type TissueExtrusionOptions = {
 
 export type TissueExtrusionSurface = {
   positions: Float32Array;
+  uvs: Float32Array;
   colors: Float32Array;
   indices: Uint32Array;
   gridWidth: number;
@@ -196,6 +197,7 @@ export function createTissueExtrusionSurface(options: TissueExtrusionOptions): T
   const activeCells = new Uint8Array(gridWidth * gridHeight);
   const vertexColors = new Float32Array((gridWidth + 1) * (gridHeight + 1) * 3);
   const positions: number[] = [];
+  const uvs: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
   let cellCount = 0;
@@ -243,8 +245,9 @@ export function createTissueExtrusionSurface(options: TissueExtrusionOptions): T
     }
   }
 
-  const addVertex = (x: number, y: number, z: number, colorIndex: number) => {
+  const addVertex = (x: number, y: number, z: number, colorIndex: number, gridX: number, gridY: number) => {
     positions.push(x, y, z);
+    uvs.push(gridX / gridWidth, gridY / gridHeight);
     colors.push(vertexColors[colorIndex * 3], vertexColors[colorIndex * 3 + 1], vertexColors[colorIndex * 3 + 2]);
     return positions.length / 3 - 1;
   };
@@ -256,7 +259,7 @@ export function createTissueExtrusionSurface(options: TissueExtrusionOptions): T
     const px = x / gridWidth - 0.5;
     const py = y / gridHeight - 0.5;
     const pz = -0.5;
-    const id = addVertex(px, py, pz, index);
+    const id = addVertex(px, py, pz, index, x, y);
     backVertexIds[index] = id;
     return id;
   };
@@ -286,8 +289,8 @@ export function createTissueExtrusionSurface(options: TissueExtrusionOptions): T
         const fy0 = y0 / gridHeight - 0.5;
         const fx1 = x1 / gridWidth - 0.5;
         const fy1 = y1 / gridHeight - 0.5;
-        const front0 = addVertex(fx0, fy0, 0.5, i0);
-        const front1 = addVertex(fx1, fy1, 0.5, i1);
+        const front0 = addVertex(fx0, fy0, 0.5, i0, x0, y0);
+        const front1 = addVertex(fx1, fy1, 0.5, i1, x1, y1);
         const back1 = getBackVertex(x1, y1);
         const back0 = getBackVertex(x0, y0);
         indices.push(front0, back1, front1, front0, back0, back1);
@@ -297,6 +300,7 @@ export function createTissueExtrusionSurface(options: TissueExtrusionOptions): T
 
   return {
     positions: new Float32Array(positions),
+    uvs: new Float32Array(uvs),
     colors: new Float32Array(colors),
     indices: new Uint32Array(indices),
     gridWidth,

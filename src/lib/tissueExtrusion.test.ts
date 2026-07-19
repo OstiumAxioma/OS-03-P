@@ -121,6 +121,41 @@ describe("createTissueExtrusionSurface", () => {
     expect(points).toContain("0.0000,0.0000,-0.5000");
   });
 
+  it("assigns texture uvs from the same grid coordinates as the extrusion vertices", () => {
+    const diffuse = new Uint8Array(4 * 4 * 4);
+    const thickness = new Uint8Array(4 * 4).fill(220);
+    const roughness = new Uint8Array(4 * 4).fill(180);
+    const tissueIndex = 1 * 4 + 2;
+
+    diffuse[tissueIndex * 4] = 200;
+    diffuse[tissueIndex * 4 + 1] = 80;
+    diffuse[tissueIndex * 4 + 2] = 60;
+    diffuse[tissueIndex * 4 + 3] = 240;
+
+    const surface = createTissueExtrusionSurface({
+      width: 4,
+      height: 4,
+      diffuse,
+      roughness,
+      thickness
+    });
+    const vertexCount = surface.positions.length / 3;
+    const uvs = Array.from({ length: vertexCount }, (_, index) => {
+      const offset = index * 2;
+
+      return [
+        surface.uvs[offset].toFixed(4),
+        surface.uvs[offset + 1].toFixed(4)
+      ].join(",");
+    });
+
+    expect(surface.uvs.length).toBe(vertexCount * 2);
+    expect(uvs).toContain("0.5000,0.2500");
+    expect(uvs).toContain("0.7500,0.2500");
+    expect(uvs).toContain("0.7500,0.5000");
+    expect(uvs).toContain("0.5000,0.5000");
+  });
+
   it("creates a continuous surface without per-cell internal box walls", () => {
     const diffuse = new Uint8Array(4 * 4 * 4);
     const thickness = new Uint8Array(4 * 4).fill(220);

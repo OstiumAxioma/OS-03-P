@@ -274,6 +274,19 @@ export default function SliceAtlas() {
       roughnessTexture.needsUpdate = true;
       dataTextures.add(roughnessTexture);
 
+      const thicknessTexture = new THREE.DataTexture(
+        thicknessBytes,
+        textureWidth,
+        textureHeight,
+        THREE.RedFormat,
+        THREE.UnsignedByteType
+      );
+      thicknessTexture.minFilter = THREE.LinearFilter;
+      thicknessTexture.magFilter = THREE.LinearFilter;
+      thicknessTexture.generateMipmaps = false;
+      thicknessTexture.needsUpdate = true;
+      dataTextures.add(thicknessTexture);
+
       const initialVisual = getSliceVisualState(sliceIndex === initialActive);
       const initialVisibleRank = initialVisibleIndices.indexOf(sliceIndex);
       const sliceDimensions = payload && study
@@ -297,6 +310,7 @@ export default function SliceAtlas() {
       const sssScaleNode = uniform(11 * initialVisual.sssScale);
       const tissueMaterial = new THREE.MeshSSSNodeMaterial({
         color: new THREE.Color().setScalar(initialVisual.tissueIntensity),
+        map: diffuseTexture,
         roughnessMap: roughnessTexture,
         roughness: 0.62,
         metalness: 0,
@@ -305,16 +319,15 @@ export default function SliceAtlas() {
         sheen: 0.12,
         sheenColor: new THREE.Color(0xff6f61),
         sheenRoughness: 0.82,
-        vertexColors: true,
         transparent: false,
         opacity: 1,
         side: THREE.FrontSide,
         depthWrite: true
       });
-      tissueMaterial.thicknessColorNode = float(1);
+      tissueMaterial.thicknessColorNode = textureNode(diffuseTexture).rgb;
       tissueMaterial.thicknessDistortionNode = float(0.16);
       tissueMaterial.thicknessAmbientNode = float(0.08);
-      tissueMaterial.thicknessAttenuationNode = float(0.5) as unknown as typeof tissueMaterial.thicknessAttenuationNode;
+      tissueMaterial.thicknessAttenuationNode = textureNode(thicknessTexture).r.mul(float(0.72)).add(float(0.12)) as unknown as typeof tissueMaterial.thicknessAttenuationNode;
       tissueMaterial.thicknessPowerNode = float(2.1);
       tissueMaterial.thicknessScaleNode = sssScaleNode;
       tissueMaterials.push(tissueMaterial);
@@ -348,6 +361,7 @@ export default function SliceAtlas() {
         });
         const tissueGeometry = new THREE.BufferGeometry();
         tissueGeometry.setAttribute("position", new THREE.BufferAttribute(surface.positions, 3));
+        tissueGeometry.setAttribute("uv", new THREE.BufferAttribute(surface.uvs, 2));
         tissueGeometry.setAttribute("color", new THREE.BufferAttribute(surface.colors, 3));
         tissueGeometry.setIndex(new THREE.BufferAttribute(surface.indices, 1));
         tissueGeometry.computeVertexNormals();
