@@ -33,6 +33,8 @@ import {
 import { createTissueExtrusionSurface } from "@/lib/tissueExtrusion";
 
 const SLICE_BOTTOM_Y = -3.95 / 2;
+const SHADOW_RECEIVER_Y = SLICE_BOTTOM_Y - 0.11;
+const CONTACT_SHADOW_Y = SLICE_BOTTOM_Y - 0.095;
 const ACES_BACKGROUND_COMPENSATION = 12;
 const GLASS_EDGE_ENVIRONMENT_GAIN = 2.05;
 const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.24;
@@ -44,6 +46,9 @@ const BACKGROUND_ACRYLIC_OPACITY = 0.26;
 const ACRYLIC_EDGE_OPACITY = 0.24;
 const ACTIVE_ACRYLIC_EDGE_OPACITY = 0.62;
 const TISSUE_SSS_SCALE_BASE = 18;
+const CONTACT_SHADOW_BASE_OPACITY = 0.082;
+const CONTACT_SHADOW_ACTIVE_OPACITY = 0.22;
+const CONTACT_SHADOW_INACTIVE_OPACITY = 0.036;
 const LIGHT_ROTATION_MIN = 0;
 const LIGHT_ROTATION_MAX = 360;
 const HDR_INTENSITY_MIN = 0.25;
@@ -60,8 +65,8 @@ const HDR_KNOB_OUTER_TICKS = 60;
 const HDR_KNOB_INNER_TICKS = 60;
 const HDR_KNOB_DOT_RADIUS = 88;
 const LIGHT_SCENE_COLORS = {
-  light: { background: "#ffffff", fog: "#ffffff", ground: 0x111111, groundOpacity: 0.12 },
-  dark: { background: "#050505", fog: "#050505", ground: 0x050505, groundOpacity: 0.22 }
+  light: { background: "#ffffff", fog: "#ffffff", ground: 0x111111, groundOpacity: 0.18 },
+  dark: { background: "#050505", fog: "#050505", ground: 0x050505, groundOpacity: 0.28 }
 };
 
 type LightingControls = {
@@ -87,6 +92,28 @@ function polarPoint(angleDegrees: number, radius: number) {
     x: Number((Math.cos(radians) * radius).toFixed(4)),
     y: Number((Math.sin(radians) * radius).toFixed(4))
   };
+}
+
+function createContactShadowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  if (context) {
+    const gradient = context.createRadialGradient(128, 128, 10, 128, 128, 126);
+    gradient.addColorStop(0, "rgba(0, 0, 0, 0.36)");
+    gradient.addColorStop(0.45, "rgba(0, 0, 0, 0.2)");
+    gradient.addColorStop(0.78, "rgba(0, 0, 0, 0.045)");
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  return texture;
 }
 
 type UploadPhase = "idle" | "uploading" | "processing" | "ready" | "error";
@@ -135,6 +162,7 @@ export default function SliceAtlas() {
   const hdrKnobRef = useRef<HTMLDivElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const activeRef = useRef<number | null>(null);
+  const focusedSliceRef = useRef<number | null>(null);
   const hdrKnobDraggingRef = useRef(false);
   const hdrKnobLastAngleRef = useRef(0);
   const thicknessScaleRef = useRef(DEFAULT_SLICE_THICKNESS_SCALE);
@@ -272,6 +300,7 @@ export default function SliceAtlas() {
     const initialVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
     const initialActive: number | null = null;
     activeRef.current = initialActive;
+    focusedSliceRef.current = null;
     setActiveSlice(initialActive);
 
     const sceneBackground = new THREE.Color(LIGHT_SCENE_COLORS.light.background);
@@ -304,11 +333,17 @@ export default function SliceAtlas() {
     const keyLight = new THREE.DirectionalLight(0xfff4ec, 3.8);
     keyLight.position.set(-4, 9, 6);
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(2048, 2048);
-    keyLight.shadow.camera.left = -8;
-    keyLight.shadow.camera.right = 8;
-    keyLight.shadow.camera.top = 8;
-    keyLight.shadow.camera.bottom = -8;
+    keyLight.shadow.mapSize.set(4096, 4096);
+    keyLight.shadow.bias = -0.00008;
+    keyLight.shadow.normalBias = 0.025;
+    keyLight.shadow.radius = 3.2;
+    keyLight.shadow.camera.left = -6.2;
+    keyLight.shadow.camera.right = 6.2;
+    keyLight.shadow.camera.top = 5.4;
+    keyLight.shadow.camera.bottom = -4.8;
+    keyLight.shadow.camera.near = 1.5;
+    keyLight.shadow.camera.far = 22;
+    keyLight.shadow.camera.updateProjectionMatrix();
     scene.add(keyLight);
 
     const rimLight = new THREE.DirectionalLight(0xff8068, 2.4);
@@ -350,10 +385,14 @@ export default function SliceAtlas() {
     const tissueMaterialGroups: THREE.MeshSSSNodeMaterial[][] = [];
     const shellMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
     const shellEdgeMaterials: THREE.LineBasicMaterial[] = [];
+    const contactShadowMaterials: THREE.MeshBasicNodeMaterial[] = [];
+    const contactShadows: THREE.Mesh[] = [];
     const baseThicknesses: number[] = [];
     const sssScaleNodes: Array<ReturnType<typeof uniform>> = [];
     const dataTextures = new Set<THREE.Texture>();
     const raycastTargets: THREE.Object3D[] = [];
+    const contactShadowTexture = createContactShadowTexture();
+    dataTextures.add(contactShadowTexture);
 
     layout.forEach((base, sliceIndex) => {
       const payload = study?.slices[sliceIndex];
@@ -555,6 +594,31 @@ export default function SliceAtlas() {
       shellBox.userData.sliceIndex = sliceIndex;
       group.add(shellBox);
       group.add(shellEdges);
+
+      const contactShadowMaterial = new THREE.MeshBasicNodeMaterial({
+        color: 0x050505,
+        map: contactShadowTexture,
+        transparent: true,
+        opacity: initialVisibleRank >= 0 ? CONTACT_SHADOW_BASE_OPACITY : 0,
+        depthWrite: false,
+        depthTest: true,
+        side: THREE.DoubleSide
+      });
+      const contactShadow = new THREE.Mesh(
+        new THREE.PlaneGeometry(
+          sliceDimensions.width * 1.18,
+          Math.max(0.72, getVisibleTissueExtrusionThickness(sliceDimensions.thickness) * 7.5)
+        ),
+        contactShadowMaterial
+      );
+      contactShadow.rotation.x = -Math.PI / 2;
+      contactShadow.position.set(group.position.x, CONTACT_SHADOW_Y, group.position.z);
+      contactShadow.renderOrder = 1;
+      contactShadow.visible = initialVisibleRank >= 0;
+      contactShadowMaterials.push(contactShadowMaterial);
+      contactShadows.push(contactShadow);
+      scene.add(contactShadow);
+
       raycastTargets.push(shellBox);
       panelGroups.push(group);
       scene.add(group);
@@ -566,7 +630,7 @@ export default function SliceAtlas() {
       groundMaterial
     );
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -2.36;
+    ground.position.y = SHADOW_RECEIVER_Y;
     ground.receiveShadow = true;
     scene.add(ground);
 
@@ -596,6 +660,12 @@ export default function SliceAtlas() {
       mount.style.cursor = "default";
     };
 
+    const focusActiveSlice = (event: PointerEvent) => {
+      updatePointer(event);
+      if (event.button !== 0 || activeRef.current === null) return;
+      focusedSliceRef.current = activeRef.current;
+    };
+
     const selectByKeyboard = (event: KeyboardEvent) => {
       if (!study || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
       event.preventDefault();
@@ -611,7 +681,7 @@ export default function SliceAtlas() {
     };
 
     renderer.domElement.addEventListener("pointermove", updatePointer);
-    renderer.domElement.addEventListener("pointerdown", updatePointer);
+    renderer.domElement.addEventListener("pointerdown", focusActiveSlice);
     renderer.domElement.addEventListener("pointerleave", clearPointer);
     mount.addEventListener("keydown", selectByKeyboard);
 
@@ -648,6 +718,18 @@ export default function SliceAtlas() {
       const currentVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
       const nextVisibleLayoutKey = currentVisibleIndices.join(",");
       const shouldSnapVisibleLayout = nextVisibleLayoutKey !== visibleLayoutKey;
+      const focusedSlice = focusedSliceRef.current;
+      const focusedVisibleRank = focusedSlice === null ? -1 : currentVisibleIndices.indexOf(focusedSlice);
+      if (focusedSlice !== null && focusedVisibleRank < 0) {
+        focusedSliceRef.current = null;
+      }
+      const referenceSliceIndex = focusedVisibleRank >= 0 ? focusedSlice ?? undefined : currentVisibleIndices[0];
+      const referenceStackThickness = referenceSliceIndex === undefined
+        ? 0
+        : getVisibleTissueExtrusionThickness(baseThicknesses[referenceSliceIndex]) * thicknessScaleRef.current;
+      const focusedStackOffsetZ = focusedVisibleRank >= 0
+        ? getSliceStackZ(focusedVisibleRank, currentVisibleIndices.length, referenceStackThickness)
+        : 0;
 
       if (previousDarkMode !== lighting.darkMode) {
         scene.background = sceneColor;
@@ -674,9 +756,13 @@ export default function SliceAtlas() {
         const visualThickness = getVisibleTissueExtrusionThickness(baseThicknesses[index]);
         const stackThickness = visualThickness * thicknessScaleRef.current;
         const hasActiveSlice = activeRef.current !== null;
+        const contactShadow = contactShadows[index];
+        const contactShadowMaterial = contactShadowMaterials[index];
 
         if (!isVisible) {
           group.visible = false;
+          contactShadow.visible = false;
+          contactShadowMaterial.opacity = 0;
           group.position.set(
             group.userData.base.x,
             group.userData.base.y,
@@ -707,7 +793,7 @@ export default function SliceAtlas() {
             visibleRank,
             currentVisibleIndices.length,
             stackThickness
-          )
+          ) - focusedStackOffsetZ
         };
         const target = getSliceTarget(dynamicBase, isActive);
         const visual = getSliceVisualState(isActive);
@@ -743,6 +829,13 @@ export default function SliceAtlas() {
         const targetEdgeOpacity = isActive ? ACTIVE_ACRYLIC_EDGE_OPACITY : (study && hasActiveSlice ? 0.1 : ACRYLIC_EDGE_OPACITY);
         const targetEnvRatio = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_ENVIRONMENT_RATIO : 1;
         const targetOpticalThickness = visualThickness * thicknessScaleRef.current * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
+        const targetContactShadowOpacity = study
+          ? isActive
+            ? CONTACT_SHADOW_ACTIVE_OPACITY
+            : hasActiveSlice
+              ? CONTACT_SHADOW_INACTIVE_OPACITY
+              : CONTACT_SHADOW_BASE_OPACITY
+          : CONTACT_SHADOW_BASE_OPACITY * 0.55;
         shellMaterials[index].transmission = THREE.MathUtils.damp(
           shellMaterials[index].transmission,
           targetAcrylicTransmission,
@@ -772,6 +865,16 @@ export default function SliceAtlas() {
           shellEdgeMaterials[index].opacity,
           targetEdgeOpacity,
           6.4,
+          delta
+        );
+        contactShadow.visible = true;
+        contactShadow.position.x = group.position.x;
+        contactShadow.position.z = group.position.z;
+        contactShadowMaterial.color.set(lighting.darkMode ? 0xf7f7f7 : 0x050505);
+        contactShadowMaterial.opacity = THREE.MathUtils.damp(
+          contactShadowMaterial.opacity,
+          lighting.darkMode ? targetContactShadowOpacity * 0.42 : targetContactShadowOpacity,
+          8.4,
           delta
         );
       });
@@ -840,7 +943,7 @@ export default function SliceAtlas() {
       window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener("pointermove", updatePointer);
-      renderer.domElement.removeEventListener("pointerdown", updatePointer);
+      renderer.domElement.removeEventListener("pointerdown", focusActiveSlice);
       renderer.domElement.removeEventListener("pointerleave", clearPointer);
       mount.removeEventListener("keydown", selectByKeyboard);
       const geometries = new Set<THREE.BufferGeometry>();
@@ -973,6 +1076,7 @@ export default function SliceAtlas() {
                 visibleSliceCountRef.current = next;
                 setRequestedVisibleSliceCount(next);
                 activeRef.current = null;
+                focusedSliceRef.current = null;
                 setActiveSlice(null);
               }}
             />
