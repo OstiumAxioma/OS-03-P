@@ -57,9 +57,6 @@ const HDR_INTENSITY_STEP = 0.05;
 const EXPOSURE_MIN = 0.55;
 const EXPOSURE_MAX = 1.65;
 const EXPOSURE_STEP = 0.01;
-const GLASS_REFLECTION_MIN = 0.15;
-const GLASS_REFLECTION_MAX = 2.25;
-const GLASS_REFLECTION_STEP = 0.05;
 const HDR_KNOB_DOT_COUNT = 30;
 const HDR_KNOB_OUTER_TICKS = 60;
 const HDR_KNOB_INNER_TICKS = 60;
@@ -73,7 +70,6 @@ type LightingControls = {
   rotation: number;
   hdrIntensity: number;
   exposure: number;
-  glassReflection: number;
   darkMode: boolean;
 };
 
@@ -168,10 +164,9 @@ export default function SliceAtlas() {
   const thicknessScaleRef = useRef(DEFAULT_SLICE_THICKNESS_SCALE);
   const visibleSliceCountRef = useRef(DEFAULT_VISIBLE_SLICE_COUNT);
   const lightingRef = useRef<LightingControls>({
-    rotation: 28,
-    hdrIntensity: 1.05,
-    exposure: 1.08,
-    glassReflection: 1,
+    rotation: 300,
+    hdrIntensity: 0.8,
+    exposure: 0.75,
     darkMode: false
   });
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
@@ -778,7 +773,7 @@ export default function SliceAtlas() {
           shellMaterials[index].opacity = study && hasActiveSlice ? BACKGROUND_ACRYLIC_OPACITY : ACRYLIC_OPACITY;
           shellMaterials[index].thickness = visualThickness * thicknessScaleRef.current;
           setMaterialFog(shellMaterials[index], false);
-          shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * lighting.glassReflection;
+          shellMaterials[index].envMapIntensity = inactiveVisual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN;
           shellEdgeMaterials[index].color.set(lighting.darkMode ? 0xf7f7f7 : 0x050505);
           shellEdgeMaterials[index].opacity = study && hasActiveSlice ? 0.08 : ACRYLIC_EDGE_OPACITY;
           return;
@@ -856,7 +851,7 @@ export default function SliceAtlas() {
         );
         shellMaterials[index].envMapIntensity = THREE.MathUtils.damp(
           shellMaterials[index].envMapIntensity,
-          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * targetEnvRatio * lighting.glassReflection,
+          visual.edgeOpacity * GLASS_EDGE_ENVIRONMENT_GAIN * targetEnvRatio,
           6.4,
           delta
         );
@@ -1271,25 +1266,6 @@ export default function SliceAtlas() {
             onChange={(event) => {
               updateLightingControls({
                 exposure: clampRange(Number(event.currentTarget.value), EXPOSURE_MIN, EXPOSURE_MAX)
-              });
-            }}
-          />
-        </label>
-        <label className="lighting-slider">
-          <span>
-            GLASS REFLECT
-            <output>{lightingControls.glassReflection.toFixed(2)}</output>
-          </span>
-          <input
-            type="range"
-            min={GLASS_REFLECTION_MIN}
-            max={GLASS_REFLECTION_MAX}
-            step={GLASS_REFLECTION_STEP}
-            value={lightingControls.glassReflection}
-            aria-label="玻璃反射强度"
-            onChange={(event) => {
-              updateLightingControls({
-                glassReflection: clampRange(Number(event.currentTarget.value), GLASS_REFLECTION_MIN, GLASS_REFLECTION_MAX)
               });
             }}
           />
