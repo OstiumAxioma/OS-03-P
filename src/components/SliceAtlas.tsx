@@ -4,6 +4,9 @@ import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } f
 import * as THREE from "three/webgpu";
 import { float, texture as textureNode, uniform } from "three/tsl";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import SliceDetails from "@/components/SliceDetails";
+import { createSliceLabel, disposeHardware, loadSliceHardware } from "@/lib/sliceHardware";
 
 import { decodeBase64Bytes } from "@/lib/studyClient";
 import type { StudyErrorPayload, StudyKind, StudyPayload } from "@/lib/studyTypes";
@@ -22,6 +25,11 @@ import {
   getSliceStackZ,
   getSliceTarget,
   getSliceVisualState,
+  getEntryLift,
+  getSelectionWave,
+  smoothStep,
+  stepSpring,
+  type MotionSpring,
   type SliceTransform
 } from "@/lib/sliceMotion";
 import {
@@ -35,17 +43,18 @@ import { createTissueExtrusionSurface } from "@/lib/tissueExtrusion";
 const SLICE_BOTTOM_Y = -3.95 / 2;
 const SHADOW_RECEIVER_Y = SLICE_BOTTOM_Y - 0.11;
 const CONTACT_SHADOW_Y = SLICE_BOTTOM_Y - 0.095;
-const ACES_BACKGROUND_COMPENSATION = 12;
-const GLASS_EDGE_ENVIRONMENT_GAIN = 2.05;
+// Keep the radiance sampled by transmission in the same range as the studio.
+const ACES_BACKGROUND_COMPENSATION = 1;
+const GLASS_EDGE_ENVIRONMENT_GAIN = 1.35;
 const ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO = 0.24;
-const ACRYLIC_TRANSMISSION = 0.82;
-const ACRYLIC_OPACITY = 0.68;
-const BACKGROUND_GLASS_TRANSMISSION = 0.06;
-const BACKGROUND_GLASS_ENVIRONMENT_RATIO = 0.2;
-const BACKGROUND_ACRYLIC_OPACITY = 0.26;
-const ACRYLIC_EDGE_OPACITY = 0.24;
-const ACTIVE_ACRYLIC_EDGE_OPACITY = 0.62;
-const TISSUE_SSS_SCALE_BASE = 18;
+const ACRYLIC_TRANSMISSION = 0.9;
+const ACRYLIC_OPACITY = 0.44;
+const BACKGROUND_GLASS_TRANSMISSION = 0.74;
+const BACKGROUND_GLASS_ENVIRONMENT_RATIO = 0.85;
+const BACKGROUND_ACRYLIC_OPACITY = 0.5;
+const ACRYLIC_EDGE_OPACITY = 0.07;
+const ACTIVE_ACRYLIC_EDGE_OPACITY = 0.16;
+const TISSUE_SSS_SCALE_BASE = 5.2;
 const CONTACT_SHADOW_BASE_OPACITY = 0.082;
 const CONTACT_SHADOW_ACTIVE_OPACITY = 0.22;
 const CONTACT_SHADOW_INACTIVE_OPACITY = 0.036;
@@ -118,6 +127,7 @@ type SliceGroup = THREE.Group & {
   userData: {
     base: SliceTransform;
     sliceIndex: number;
+    entranceZ?: number;
   };
 };
 
@@ -129,28 +139,6 @@ function setMaterialFog(material: FogAwareMaterial, enabled: boolean) {
   material.needsUpdate = true;
 }
 
-function createAxisLabel(text: string, position: THREE.Vector3): THREE.Sprite {
-  const canvas = document.createElement("canvas");
-  canvas.width = 96;
-  canvas.height = 48;
-  const context = canvas.getContext("2d");
-  if (context) {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = "#050505";
-    context.font = "700 26px Arial";
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText(text, canvas.width / 2, canvas.height / 2);
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
-  const sprite = new THREE.Sprite(material);
-  sprite.position.copy(position);
-  sprite.scale.set(0.64, 0.32, 1);
-  return sprite;
-}
-
 export default function SliceAtlas() {
   const mountRef = useRef<HTMLDivElement>(null);
   const dicomInputRef = useRef<HTMLInputElement>(null);
@@ -159,17 +147,23 @@ export default function SliceAtlas() {
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const activeRef = useRef<number | null>(null);
   const focusedSliceRef = useRef<number | null>(null);
+  const inspectionRef = useRef(false);
+  const inspectionPanelRef = useRef<HTMLDivElement>(null);
+  const observeButtonRef = useRef<HTMLButtonElement>(null);
   const hdrKnobDraggingRef = useRef(false);
   const hdrKnobLastAngleRef = useRef(0);
   const thicknessScaleRef = useRef(DEFAULT_SLICE_THICKNESS_SCALE);
   const visibleSliceCountRef = useRef(DEFAULT_VISIBLE_SLICE_COUNT);
   const lightingRef = useRef<LightingControls>({
-    rotation: 300,
-    hdrIntensity: 0.8,
-    exposure: 0.75,
+    rotation: 0,
+    hdrIntensity: 0.65,
+    exposure: 1.05,
     darkMode: false
   });
   const [activeSlice, setActiveSlice] = useState<number | null>(null);
+  const [inspectionOpen, setInspectionOpen] = useState(false);
+  const [inspectionIndex, setInspectionIndex] = useState(0);
+  const [lightingOpen, setLightingOpen] = useState(false);
   const [thicknessScale, setThicknessScale] = useState(DEFAULT_SLICE_THICKNESS_SCALE);
   const [requestedVisibleSliceCount, setRequestedVisibleSliceCount] = useState(DEFAULT_VISIBLE_SLICE_COUNT);
   const [lightingControls, setLightingControls] = useState<LightingControls>(lightingRef.current);
@@ -182,6 +176,46 @@ export default function SliceAtlas() {
   const visibleSliceCount = clampVisibleSliceCount(requestedVisibleSliceCount, slicePoolSize);
   const visibleSliceIndices = selectVisibleSliceIndices(slicePoolSize, visibleSliceCount);
   visibleSliceCountRef.current = visibleSliceCount;
+
+  const observeSlice = () => {
+    const index = activeRef.current ?? visibleSliceIndices[Math.floor(visibleSliceIndices.length / 2)];
+    if (index === undefined || !ready) return;
+    focusedSliceRef.current = index;
+    activeRef.current = index;
+    setActiveSlice(index);
+    setInspectionIndex(index);
+    inspectionRef.current = true;
+    setInspectionOpen(true);
+    setLightingOpen(false);
+  };
+
+  const closeInspection = () => {
+    inspectionRef.current = false;
+    setInspectionOpen(false);
+    requestAnimationFrame(() => observeButtonRef.current?.focus({ preventScroll: true }));
+  };
+
+  useEffect(() => {
+    if (!inspectionOpen) return;
+    inspectionPanelRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeInspection();
+      }
+      if (event.key === "Tab") {
+        const nodes = Array.from(inspectionPanelRef.current?.querySelectorAll<HTMLElement>('button:not([tabindex="-1"]), [tabindex="0"]') ?? []);
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [inspectionOpen]);
 
   const updateLightingControls = (next: Partial<LightingControls>) => {
     lightingRef.current = { ...lightingRef.current, ...next };
@@ -296,6 +330,8 @@ export default function SliceAtlas() {
     const initialActive: number | null = null;
     activeRef.current = initialActive;
     focusedSliceRef.current = null;
+    inspectionRef.current = false;
+    setInspectionOpen(false);
     setActiveSlice(initialActive);
 
     const sceneBackground = new THREE.Color(LIGHT_SCENE_COLORS.light.background);
@@ -321,14 +357,14 @@ export default function SliceAtlas() {
     renderer.domElement.setAttribute("aria-hidden", "true");
     mount.appendChild(renderer.domElement);
 
-    const hemisphereLight = new THREE.HemisphereLight(0xfff6ef, 0x164a3f, 1.3);
+    const hemisphereLight = new THREE.HemisphereLight(0xfffaf5, 0xb4a18c, 0.65);
     hemisphereLight.position.set(0, 1, 0);
     scene.add(hemisphereLight);
 
-    const keyLight = new THREE.DirectionalLight(0xfff4ec, 3.8);
-    keyLight.position.set(-4, 9, 6);
+    const keyLight = new THREE.DirectionalLight(0xfff7ed, 2.1);
+    keyLight.position.set(-6, 14, 5);
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(4096, 4096);
+    keyLight.shadow.mapSize.set(2048, 2048);
     keyLight.shadow.bias = -0.00008;
     keyLight.shadow.normalBias = 0.025;
     keyLight.shadow.radius = 3.2;
@@ -341,41 +377,20 @@ export default function SliceAtlas() {
     keyLight.shadow.camera.updateProjectionMatrix();
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0xff8068, 2.4);
-    rimLight.position.set(7, 3, -4);
+    const rimLight = new THREE.DirectionalLight(0xffeee2, 1.3);
+    rimLight.position.set(3, 5, -8);
     scene.add(rimLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.65);
+    fillLight.position.set(7, 8, 10);
+    scene.add(fillLight);
     const keyLightBasePosition = keyLight.position.clone();
     const rimLightBasePosition = rimLight.position.clone();
     const lightRotationAxis = new THREE.Vector3(0, 1, 0);
 
-    const axisScene = new THREE.Scene();
-    const axisCamera = new THREE.PerspectiveCamera(34, 1, 0.1, 20);
-    axisCamera.position.copy(camera.position).normalize().multiplyScalar(4.2);
-    axisCamera.lookAt(0, 0, 0);
-    const axisColor = 0x050505;
-    const origin = new THREE.Vector3(-0.25, -0.25, -0.25);
-    const axes: Array<[THREE.Vector3, string]> = [
-      [new THREE.Vector3(1, 0, 0), "X"],
-      [new THREE.Vector3(0, 1, 0), "Y+"],
-      [new THREE.Vector3(0, 0, 1), "Z"]
-    ];
-    axes.forEach(([direction, label]) => {
-      const arrow = new THREE.ArrowHelper(direction, origin, 1.18, axisColor, 0.2, 0.13);
-      arrow.traverse((object) => {
-        if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
-          const materials = Array.isArray(object.material) ? object.material : [object.material];
-          materials.forEach((material) => {
-            material.depthTest = false;
-            material.depthWrite = false;
-          });
-        }
-      });
-      axisScene.add(arrow);
-      axisScene.add(createAxisLabel(label, origin.clone().add(direction.clone().multiplyScalar(1.42))));
-    });
-
     const layout = createSliceLayout(slicePoolCount, 0.62);
     const panelGroups: SliceGroup[] = [];
+    const hardwareMounts: THREE.Group[] = [];
+    const heightSprings: MotionSpring[] = [];
     const tissueMaterials: THREE.MeshSSSNodeMaterial[] = [];
     const tissueMaterialGroups: THREE.MeshSSSNodeMaterial[][] = [];
     const shellMaterials: THREE.MeshPhysicalNodeMaterial[] = [];
@@ -455,6 +470,14 @@ export default function SliceAtlas() {
       group.scale.z = thicknessScaleRef.current;
       group.visible = initialVisibleRank >= 0;
       group.userData = { base: bottomAlignedBase, sliceIndex };
+      heightSprings.push({ value: bottomAlignedBase.y, velocity: 0 });
+      const hardwareMount = new THREE.Group();
+      hardwareMount.scale.set(sliceDimensions.width / 5, sliceDimensions.height / 3.7, getVisibleTissueExtrusionThickness(sliceDimensions.thickness) / 0.5);
+      hardwareMounts.push(hardwareMount);
+      const label = createSliceLabel(payload?.sourceIndex ?? sliceIndex);
+      dataTextures.add((label.material as THREE.MeshBasicNodeMaterial).map!);
+      hardwareMount.add(label);
+      group.add(hardwareMount);
 
       const sssScaleNode = uniform(TISSUE_SSS_SCALE_BASE * initialVisual.sssScale);
       const tissueMaterial = new THREE.MeshSSSNodeMaterial({
@@ -486,21 +509,21 @@ export default function SliceAtlas() {
 
       const shellMaterial = new THREE.MeshPhysicalNodeMaterial({
         color: 0xffffff,
-        roughness: 0.135,
+        roughness: 0.24,
         metalness: 0,
-        transmission: payload ? ACRYLIC_TRANSMISSION : 0.28,
+        transmission: ACRYLIC_TRANSMISSION,
         thickness: sliceDimensions.thickness * thicknessScaleRef.current,
         ior: 1.49,
-        attenuationColor: new THREE.Color(0xffffff),
-        attenuationDistance: 9,
-        dispersion: 1.45,
-        opacity: payload ? ACRYLIC_OPACITY : 0.52,
+        attenuationColor: new THREE.Color(0xeee5da),
+        attenuationDistance: 3.5,
+        dispersion: 0.25,
+        opacity: ACRYLIC_OPACITY,
         transparent: true,
-        clearcoat: 0.7,
+        clearcoat: 0.42,
         clearcoatRoughness: 0.13,
         specularIntensity: 0.68,
         specularColor: new THREE.Color(0xffffff),
-        iridescence: 0.46,
+        iridescence: 0.12,
         iridescenceIOR: 1.62,
         iridescenceThicknessRange: [90, 520],
         side: THREE.FrontSide,
@@ -527,7 +550,8 @@ export default function SliceAtlas() {
         const tissueVolume = new THREE.Mesh(tissueGeometry, tissueMaterial);
         const tissueDepth = getVisibleTissueExtrusionThickness(sliceDimensions.thickness);
 
-        tissueVolume.scale.set(sliceDimensions.width * 0.965, sliceDimensions.height * 0.965, tissueDepth);
+        tissueVolume.scale.set(sliceDimensions.width * 0.79, sliceDimensions.height * 0.79, tissueDepth * 0.8);
+        tissueVolume.position.x = sliceDimensions.width * 0.055;
         tissueVolume.castShadow = true;
         tissueVolume.receiveShadow = true;
         tissueVolume.renderOrder = sliceIndex * 2;
@@ -557,24 +581,26 @@ export default function SliceAtlas() {
         tissueFaceMaterial.thicknessScaleNode = sssScaleNode;
         sliceTissueMaterials.push(tissueFaceMaterial);
         const tissueFace = new THREE.Mesh(
-          new THREE.PlaneGeometry(sliceDimensions.width * 0.965, sliceDimensions.height * 0.965),
+          new THREE.PlaneGeometry(sliceDimensions.width * 0.79, sliceDimensions.height * 0.79),
           tissueFaceMaterial
         );
-        tissueFace.position.z = tissueDepth / 2 + 0.002;
+        tissueFace.position.set(sliceDimensions.width * 0.055, 0, tissueDepth * 0.4 + 0.002);
         tissueFace.castShadow = false;
         tissueFace.receiveShadow = true;
         tissueFace.renderOrder = sliceIndex * 2 + 1;
         group.add(tissueFace);
       }
 
-      const shellGeometry = new THREE.BoxGeometry(
+      const shellGeometry = new RoundedBoxGeometry(
         sliceDimensions.width,
         sliceDimensions.height,
-        getVisibleTissueExtrusionThickness(sliceDimensions.thickness)
+        getVisibleTissueExtrusionThickness(sliceDimensions.thickness),
+        2,
+        Math.min(0.045, sliceDimensions.width * 0.018, sliceDimensions.height * 0.018)
       );
       const shellBox = new THREE.Mesh(shellGeometry, shellMaterial);
       const shellEdgeMaterial = new THREE.LineBasicMaterial({
-        color: 0x050505,
+        color: 0x928e84,
         transparent: true,
         opacity: ACRYLIC_EDGE_OPACITY,
         depthTest: true,
@@ -583,7 +609,7 @@ export default function SliceAtlas() {
       const shellEdges = new THREE.LineSegments(new THREE.EdgesGeometry(shellGeometry, 32), shellEdgeMaterial);
       shellEdges.renderOrder = sliceIndex * 2 + 3;
       shellEdgeMaterials.push(shellEdgeMaterial);
-      shellBox.castShadow = true;
+      shellBox.castShadow = false;
       shellBox.receiveShadow = false;
       shellBox.renderOrder = sliceIndex * 2 + 2;
       shellBox.userData.sliceIndex = sliceIndex;
@@ -632,46 +658,66 @@ export default function SliceAtlas() {
     const pointer = new THREE.Vector2(4, 4);
     const raycaster = new THREE.Raycaster();
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const focusSpring = { value: 0, velocity: 0 };
+    const cameraSpring = { value: 0, velocity: 0 };
+    const cameraAim = new THREE.Vector3(0, 0.1, 0);
+    let previousActive: number | null = null;
+    let waveAge = 4;
+    let waveRank = 0;
+    let entranceTime = 0;
+    let retainedInspectionIndex = 0;
 
     const updatePointer = (event: PointerEvent) => {
+      if (inspectionRef.current || cameraSpring.value > 0.02 || (!reducedMotion && entranceTime < 1.4)) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
       const visibleTargets = raycastTargets.filter((target) => target.parent?.visible);
       const hit = raycaster.intersectObjects(visibleTargets, false)[0];
-      const next = study && typeof hit?.object.userData.sliceIndex === "number" ? hit.object.userData.sliceIndex : null;
+      const hovered = typeof hit?.object.userData.sliceIndex === "number" ? hit.object.userData.sliceIndex : null;
+      const next = hovered ?? focusedSliceRef.current;
 
       if (activeRef.current !== next) {
         activeRef.current = next;
         setActiveSlice(next);
       }
-      mount.style.cursor = next === null ? "default" : "pointer";
+      mount.style.cursor = hovered === null ? "default" : "pointer";
     };
 
     const clearPointer = () => {
-      activeRef.current = null;
-      setActiveSlice(null);
+      if (inspectionRef.current) return;
+      activeRef.current = focusedSliceRef.current;
+      setActiveSlice(focusedSliceRef.current);
       mount.style.cursor = "default";
     };
 
     const focusActiveSlice = (event: PointerEvent) => {
+      if (inspectionRef.current || cameraSpring.value > 0.02) return;
       updatePointer(event);
       if (event.button !== 0 || activeRef.current === null) return;
       focusedSliceRef.current = activeRef.current;
+      mount.focus({ preventScroll: true });
     };
 
     const selectByKeyboard = (event: KeyboardEvent) => {
-      if (!study || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+      if (inspectionRef.current) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        observeButtonRef.current?.click();
+        return;
+      }
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
       const visibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
       if (visibleIndices.length === 0) return;
-      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const direction = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
       const activeRank = activeRef.current === null ? -1 : visibleIndices.indexOf(activeRef.current);
       const currentRank = activeRank >= 0 ? activeRank : Math.floor(visibleIndices.length / 2);
       const nextRank = Math.min(visibleIndices.length - 1, Math.max(0, currentRank + direction));
       const next = visibleIndices[nextRank];
       activeRef.current = next;
+      focusedSliceRef.current = next;
       setActiveSlice(next);
     };
 
@@ -699,20 +745,18 @@ export default function SliceAtlas() {
     let animationFrame = 0;
     let disposed = false;
     let environmentTarget: THREE.RenderTarget | null = null;
-    let visibleLayoutKey = initialVisibleIndices.join(",");
     let previousDarkMode: boolean | null = null;
     const render = () => {
       const delta = Math.min(clock.getDelta(), 0.05);
       const elapsed = clock.elapsedTime;
-      const damping = reducedMotion ? 30 : 7.8;
+      entranceTime = elapsed;
+      const damping = reducedMotion ? 1000 : 6.2;
       const lighting = lightingRef.current;
       const lightingAngle = THREE.MathUtils.degToRad(lighting.rotation);
       const sceneColors = lighting.darkMode ? LIGHT_SCENE_COLORS.dark : LIGHT_SCENE_COLORS.light;
       const sceneColor = new THREE.Color(sceneColors.background).multiplyScalar(ACES_BACKGROUND_COMPENSATION);
       const fogColor = new THREE.Color(sceneColors.fog).multiplyScalar(ACES_BACKGROUND_COMPENSATION);
       const currentVisibleIndices = selectVisibleSliceIndices(slicePoolCount, visibleSliceCountRef.current);
-      const nextVisibleLayoutKey = currentVisibleIndices.join(",");
-      const shouldSnapVisibleLayout = nextVisibleLayoutKey !== visibleLayoutKey;
       const focusedSlice = focusedSliceRef.current;
       const focusedVisibleRank = focusedSlice === null ? -1 : currentVisibleIndices.indexOf(focusedSlice);
       if (focusedSlice !== null && focusedVisibleRank < 0) {
@@ -725,6 +769,15 @@ export default function SliceAtlas() {
       const focusedStackOffsetZ = focusedVisibleRank >= 0
         ? getSliceStackZ(focusedVisibleRank, currentVisibleIndices.length, referenceStackThickness)
         : 0;
+      if (reducedMotion) focusSpring.value = focusedStackOffsetZ;
+      else stepSpring(focusSpring, focusedStackOffsetZ, 5.6, delta);
+      if (activeRef.current !== previousActive) {
+        previousActive = activeRef.current;
+        waveAge = 0;
+        waveRank = activeRef.current === null ? -1 : currentVisibleIndices.indexOf(activeRef.current);
+      }
+      waveAge += delta;
+      if (inspectionRef.current && focusedSliceRef.current !== null) retainedInspectionIndex = focusedSliceRef.current;
 
       if (previousDarkMode !== lighting.darkMode) {
         scene.background = sceneColor;
@@ -739,9 +792,9 @@ export default function SliceAtlas() {
       scene.environmentRotation.y = lightingAngle;
       keyLight.position.copy(keyLightBasePosition).applyAxisAngle(lightRotationAxis, lightingAngle);
       rimLight.position.copy(rimLightBasePosition).applyAxisAngle(lightRotationAxis, lightingAngle);
-      hemisphereLight.intensity = 1.3 * lighting.hdrIntensity;
-      keyLight.intensity = 3.8 * lighting.hdrIntensity;
-      rimLight.intensity = 2.4 * lighting.hdrIntensity;
+      hemisphereLight.intensity = 0.65 * lighting.hdrIntensity / 0.65;
+      keyLight.intensity = 2.1 * lighting.hdrIntensity / 0.65;
+      rimLight.intensity = 1.3 * lighting.hdrIntensity / 0.65;
 
       panelGroups.forEach((group, index) => {
         const visibleRank = currentVisibleIndices.indexOf(index);
@@ -780,7 +833,7 @@ export default function SliceAtlas() {
         }
 
         const isActive = activeRef.current === index;
-        tissueMaterialGroups[index].forEach((material) => setMaterialFog(material, !isActive));
+        tissueMaterialGroups[index].forEach((material) => setMaterialFog(material, true));
         setMaterialFog(shellMaterials[index], false);
         const dynamicBase = {
           ...group.userData.base,
@@ -788,20 +841,30 @@ export default function SliceAtlas() {
             visibleRank,
             currentVisibleIndices.length,
             stackThickness
-          ) - focusedStackOffsetZ
+          ) - focusSpring.value
         };
-        const target = getSliceTarget(dynamicBase, isActive);
+        const target = getSliceTarget(dynamicBase, isActive, inspectionRef.current && focusedSliceRef.current === index ? 1 : 0);
         const visual = getSliceVisualState(isActive);
-        if (!wasVisible || shouldSnapVisibleLayout) {
-          group.position.set(target.x, target.y, target.z);
+        if (!wasVisible) {
+          group.position.set(target.x, target.y + (reducedMotion ? 0 : 0.5), target.z);
+          heightSprings[index].value = group.position.y;
+          heightSprings[index].velocity = 0;
           group.scale.set(1, 1, thicknessScaleRef.current);
         }
         group.visible = true;
-        const lateralWave = isActive && !reducedMotion ? Math.sin(elapsed * 2.2) * 0.025 : 0;
-        group.position.x = THREE.MathUtils.damp(group.position.x, target.x + lateralWave, damping, delta);
-        group.position.y = THREE.MathUtils.damp(group.position.y, target.y, damping, delta);
-        group.position.z = THREE.MathUtils.damp(group.position.z, target.z, damping, delta);
-        const scaleTarget = isActive ? 1.018 : 1;
+        const entryLift = getEntryLift(visibleRank, currentVisibleIndices.length, elapsed, reducedMotion);
+        const ripple = reducedMotion || waveRank < 0 ? 0 : getSelectionWave(visibleRank - waveRank, waveAge) * (1 - cameraSpring.value);
+        const idle = isActive && !inspectionRef.current && waveAge > 2.5 && !reducedMotion ? 0.025 * Math.sin(elapsed * 0.78) * smoothStep((waveAge - 2.5) / 1.5) : 0;
+        if (reducedMotion) heightSprings[index].value = target.y;
+        else stepSpring(heightSprings[index], target.y + ripple + idle, 6.2, delta);
+        group.position.x = target.x;
+        group.position.y = heightSprings[index].value + entryLift;
+        const entranceZ = reducedMotion ? 0 : -8 * (1 - smoothStep(elapsed / 2.3));
+        group.position.z = THREE.MathUtils.damp(group.position.z - (group.userData.entranceZ ?? 0), target.z, damping, delta);
+        // Entrance is a shared track move; extraction remains strictly Y-only.
+        group.position.z += entranceZ;
+        group.userData.entranceZ = entranceZ;
+        const scaleTarget = 1;
         group.scale.x = THREE.MathUtils.damp(group.scale.x, scaleTarget, damping, delta);
         group.scale.y = THREE.MathUtils.damp(group.scale.y, scaleTarget, damping, delta);
         group.scale.z = THREE.MathUtils.damp(
@@ -819,9 +882,10 @@ export default function SliceAtlas() {
           6.4,
           delta
         );
-        const targetAcrylicTransmission = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_TRANSMISSION : ACRYLIC_TRANSMISSION;
-        const targetGlassOpacity = study && hasActiveSlice && !isActive ? BACKGROUND_ACRYLIC_OPACITY : ACRYLIC_OPACITY;
-        const targetEdgeOpacity = isActive ? ACTIVE_ACRYLIC_EDGE_OPACITY : (study && hasActiveSlice ? 0.1 : ACRYLIC_EDGE_OPACITY);
+        const targetAcrylicTransmission = hasActiveSlice && !isActive ? BACKGROUND_GLASS_TRANSMISSION : ACRYLIC_TRANSMISSION;
+        const targetGlassOpacity = hasActiveSlice && !isActive ? BACKGROUND_ACRYLIC_OPACITY : ACRYLIC_OPACITY;
+        const targetEdgeOpacity = isActive ? ACTIVE_ACRYLIC_EDGE_OPACITY : ACRYLIC_EDGE_OPACITY;
+        shellMaterials[index].roughness = THREE.MathUtils.damp(shellMaterials[index].roughness, isActive ? 0.055 : 0.24, 5, delta);
         const targetEnvRatio = study && hasActiveSlice && !isActive ? BACKGROUND_GLASS_ENVIRONMENT_RATIO : 1;
         const targetOpticalThickness = visualThickness * thicknessScaleRef.current * (isActive ? ACTIVE_GLASS_OPTICAL_THICKNESS_RATIO : 1);
         const targetContactShadowOpacity = study
@@ -873,21 +937,50 @@ export default function SliceAtlas() {
           delta
         );
       });
-      visibleLayoutKey = nextVisibleLayoutKey;
 
       const width = mount.clientWidth;
       const height = mount.clientHeight;
+      const aspect = width / Math.max(1, height);
+      const inspected = panelGroups[retainedInspectionIndex];
+      const lifted = inspected ? Math.max(0, inspected.position.y - inspected.userData.base.y - 0.4) : 0;
+      const detailTarget = smoothStep(lifted / 3.8);
+      if (reducedMotion) cameraSpring.value = inspectionRef.current ? 1 : 0;
+      else stepSpring(cameraSpring, detailTarget, 6, delta);
+      const detail = cameraSpring.value;
+      const mobile = aspect < 0.85;
+      const baseSpan = mobile ? 13.5 : 9.4;
+      const detailSpan = mobile ? 11.8 : Math.max(6.7, 5.8 / Math.max(0.7, aspect * 0.47));
+      const span = THREE.MathUtils.lerp(baseSpan, detailSpan, detail);
+      const direction = new THREE.Vector3().lerpVectors(new THREE.Vector3(0.58, 0.38, 0.72).normalize(), new THREE.Vector3(0.21, 0.13, 0.97).normalize(), detail).normalize();
+      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
+      const up = new THREE.Vector3().crossVectors(direction, right).normalize();
+      const anchorX = THREE.MathUtils.lerp(mobile ? 0.51 : 0.56, mobile ? 0.5 : 0.29, detail);
+      const anchorY = THREE.MathUtils.lerp(mobile ? 0.59 : 0.49, mobile ? 0.27 : 0.46, detail);
+      const targetAim = new THREE.Vector3(0, 0.05, 0).lerp(inspected?.position ?? new THREE.Vector3(), detail);
+      targetAim.addScaledVector(right, (0.5 - anchorX) * span * aspect);
+      targetAim.addScaledVector(up, (anchorY - 0.5) * span);
+      if (reducedMotion) cameraAim.copy(targetAim);
+      else cameraAim.lerp(targetAim, 1 - Math.exp(-delta * 6));
+      camera.position.copy(cameraAim).addScaledVector(direction, 22);
+      camera.lookAt(cameraAim);
+      camera.left = -span * aspect / 2;
+      camera.right = span * aspect / 2;
+      camera.top = span / 2;
+      camera.bottom = -span / 2;
+      camera.updateProjectionMatrix();
+      if (scene.fog instanceof THREE.Fog) {
+        scene.fog.near = 22 + THREE.MathUtils.lerp(7, 1, detail);
+        scene.fog.far = 22 + THREE.MathUtils.lerp(22, 16, detail);
+      }
+      const panel = inspectionPanelRef.current;
+      if (panel) {
+        const reveal = inspectionRef.current ? smoothStep((detail - 0.25) / 0.6) : 0;
+        panel.style.setProperty("--detail-reveal", String(reveal));
+      }
       renderer.setViewport(0, 0, width, height);
       renderer.setScissorTest(false);
       renderer.clear();
       renderer.render(scene, camera);
-      renderer.clearDepth();
-      const axisSize = Math.round(THREE.MathUtils.clamp(width * 0.105, 88, 116));
-      renderer.setViewport(width - axisSize - 26, 88, axisSize, axisSize);
-      renderer.setScissor(width - axisSize - 26, 88, axisSize, axisSize);
-      renderer.setScissorTest(true);
-      renderer.render(axisScene, axisCamera);
-      renderer.setScissorTest(false);
       animationFrame = window.requestAnimationFrame(render);
     };
 
@@ -922,12 +1015,20 @@ export default function SliceAtlas() {
         scene.environment = environmentTarget.texture;
         scene.environmentIntensity = lightingRef.current.hdrIntensity;
         scene.environmentRotation.y = THREE.MathUtils.degToRad(lightingRef.current.rotation);
+        const hardware = await loadSliceHardware();
+        if (disposed) {
+          disposeHardware(hardware);
+          return;
+        }
+        hardwareMounts.forEach((mount) => mount.add(hardware.clone(true)));
+        clock.start();
         setReady(true);
         render();
-      } catch {
+      } catch (error) {
+        console.error("Slice scene initialization failed", error);
         if (!disposed) {
           setUploadPhase("error");
-          setUploadMessage("当前浏览器无法初始化 WebGPU 或 WebGL2 SSS 渲染器。");
+          setUploadMessage("场景初始化失败，请刷新以重新加载渲染器与模型资源。");
         }
       }
     };
@@ -943,7 +1044,7 @@ export default function SliceAtlas() {
       mount.removeEventListener("keydown", selectByKeyboard);
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
-      [scene, axisScene].forEach((targetScene) => {
+      [scene].forEach((targetScene) => {
         targetScene.traverse((object) => {
           if (object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments) {
             geometries.add(object.geometry);
@@ -973,29 +1074,30 @@ export default function SliceAtlas() {
   const hdrKnobFilledDots = Math.round((hdrKnobValue / 100) * HDR_KNOB_DOT_COUNT);
 
   return (
-    <main className={`atlas-shell${lightingControls.darkMode ? " is-dark" : ""}`}>
+    <main className={`atlas-shell${lightingControls.darkMode ? " is-dark" : ""}${inspectionOpen ? " is-inspecting" : ""}${ready ? " scene-ready" : ""}`}>
       <header className="atlas-header">
         <a className="brand" href="#viewer" aria-label="OS-03-P medical slice atlas">
-          <span className="brand-mark" aria-hidden="true" />
-          <span>OS-03-P</span>
+          <strong>OS-03-P</strong>
+          <span>VOLUMETRIC STUDY</span>
+          <span>SLICE <b>ARCHIVE</b></span>
         </a>
         <div className="study-meta">
           <span>
             {study
               ? `${study.modality} / ${study.intensityMapping === "hu" ? "HU TISSUE" : "NORMALIZED"} SSS`
-              : "NO STUDY LOADED"}
+              : "MEDICAL IMAGE ARCHIVE"}
           </span>
-          <span>{study ? `${study.dimensions.join(" × ")} · ${study.totalSlices} SLICES` : "SERVER-SIDE ITK PROCESSING"}</span>
+          <span>{study ? `${study.dimensions.join(" × ")} · ${study.totalSlices} SLICES` : "SESSION / 001"}</span>
+          <button className="lighting-toggle" type="button" aria-expanded={lightingOpen} aria-controls="lighting-controls" onClick={() => setLightingOpen(!lightingOpen)} disabled={inspectionOpen}>场景光照</button>
         </div>
       </header>
 
-      <section className="viewer-copy" aria-labelledby="atlas-title">
-        <p className="eyebrow">VOLUMETRIC STUDY</p>
+      <section className="viewer-copy" aria-labelledby="atlas-title" inert={inspectionOpen} aria-hidden={inspectionOpen}>
+        <p className="eyebrow">INTERNAL DATABASE / 组织影像</p>
         <h1 id="atlas-title">
-          Tissue,
-          <br />in layers.
+          TISSUE<br />IN LAYERS.
         </h1>
-        <p className="intro">上传 DICOM 或 NIfTI，服务器将空气透明化，并生成可抽出的组织盒切片。</p>
+        <p className="intro">逐层浏览，观察组织的空间结构。<br />选择影像，建立你的切片档案。</p>
         <div className="upload-panel">
           <input
             ref={dicomInputRef}
@@ -1083,20 +1185,28 @@ export default function SliceAtlas() {
         id="viewer"
         ref={mountRef}
         className={`webgl-stage${ready ? " is-ready" : ""}`}
-        tabIndex={0}
+        tabIndex={inspectionOpen ? -1 : 0}
         role="application"
-        aria-label="三维医学切片查看器。上传影像后使用鼠标悬停，或用左右方向键选择切片。"
+        aria-label="三维医学切片查看器。鼠标悬停预览，点击或方向键选择并居中，按 Enter 观察切片。"
       >
         <span className="loading-label">INITIALIZING SSS</span>
       </div>
 
-      <aside className="slice-readout" aria-live="polite">
-        <span className="readout-label">ACTIVE PLANE</span>
+      <div className="selection-actions" inert={inspectionOpen} aria-hidden={inspectionOpen}>
+        <div className="selection-kicker">SELECTED SLICE / 当前切片</div>
+        <div className="selection-title">{activeSlice === null ? "选择一张切片" : `SLICE NUMBER: S-${String((study?.slices[activeSlice]?.sourceIndex ?? activeSlice) + 1).padStart(3, "0")}`}</div>
+        <button ref={observeButtonRef} className="observe-button" type="button" disabled={!ready} onClick={observeSlice}><span>观察切片</span><span>ACCESS SLICE</span></button>
+      </div>
+
+      <SliceDetails study={study} index={inspectionIndex} open={inspectionOpen} panelRef={inspectionPanelRef} onClose={closeInspection} />
+
+      <aside className="slice-readout" aria-live="polite" aria-hidden={inspectionOpen}>
+        <span className="readout-label">ARCHIVE / SELECT</span>
         <span className="readout-number">{displaySlice}</span>
         <span className="readout-total">/ {String(visibleSliceCount).padStart(2, "0")}</span>
       </aside>
 
-      <aside className="lighting-panel" aria-label="HDR 光照调试控制">
+      <aside id="lighting-controls" className="lighting-panel" aria-label="HDR 光照调试控制" hidden={!lightingOpen}>
         <div className="lighting-panel-header">
           <span>HDR LIGHT</span>
           <label className="mode-toggle">
@@ -1274,13 +1384,12 @@ export default function SliceAtlas() {
 
       <footer className="atlas-footer">
         <div className="interaction-hint">
-          <span className="cursor-icon" aria-hidden="true" />
-          {study ? "HOVER TO ISOLATE · Y+ PULL" : "UPLOAD A STUDY TO BEGIN"}
+          {inspectionOpen ? "ESC 返回阵列" : "悬停预览 / 点击居中 / ENTER 观察切片"}
         </div>
         <div className="slice-track" aria-hidden="true">
           <span style={{ width: `${progress}%` }} />
         </div>
-        <span className="engine-label">ITK-WASM × HU COLOR × WEBGPU SSS</span>
+        <span className="engine-label">OS-03-P / TISSUE ARCHIVE</span>
       </footer>
     </main>
   );

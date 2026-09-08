@@ -5,7 +5,10 @@ import {
   createSliceLayout,
   getSliceStackZ,
   getSliceTarget,
-  getSliceVisualState
+  getSliceVisualState,
+  stepSpring,
+  getEntryLift,
+  getSelectionWave
 } from "./sliceMotion";
 
 describe("createSliceLayout", () => {
@@ -31,17 +34,57 @@ describe("getSliceStackZ", () => {
 });
 
 describe("getSliceTarget", () => {
-  it("keeps the lateral motion while making world Y+ the dominant pull", () => {
+  it("previews and extracts vertically without moving the slice out of its slot", () => {
     const [base] = createSliceLayout(1, 0.5);
     const active = getSliceTarget(base, true);
     const xTravel = active.x - base.x;
     const yTravel = active.y - base.y;
 
     expect(getSliceTarget(base, false)).toEqual(base);
-    expect(xTravel).toBeGreaterThan(0.6);
+    expect(xTravel).toBe(0);
     expect(active.z).toBe(base.z);
-    expect(yTravel).toBeGreaterThan(2);
-    expect(yTravel).toBeGreaterThan(xTravel * 2.5);
+    expect(yTravel).toBeGreaterThan(0);
+    expect(yTravel).toBeLessThan(0.6);
+    const extracted = getSliceTarget(base, true, 1);
+    expect(extracted.x).toBe(base.x);
+    expect(extracted.z).toBe(base.z);
+    expect(extracted.y - base.y).toBeGreaterThan(3.95);
+  });
+});
+
+describe("continuous transitions", () => {
+  it("preserves position and velocity when a moving selection reverses", () => {
+    const spring = { value: 0, velocity: 0 };
+    for (let i = 0; i < 20; i++) stepSpring(spring, 4, 6, 1 / 60);
+    const before = spring.value;
+    stepSpring(spring, 0, 6, 1 / 6000);
+    expect(Math.abs(spring.value - before)).toBeLessThan(0.01);
+    for (let i = 0; i < 240; i++) stepSpring(spring, 0, 6, 1 / 60);
+    expect(spring.value).toBeCloseTo(0, 5);
+    expect(spring.velocity).toBeCloseTo(0, 5);
+  });
+
+  it("follows the same motion at 30 and 120 frames per second", () => {
+    const slow = { value: 3, velocity: -2 };
+    const fast = { ...slow };
+    for (let i = 0; i < 30; i++) stepSpring(slow, -1, 4.2, 1 / 30);
+    for (let i = 0; i < 120; i++) stepSpring(fast, -1, 4.2, 1 / 120);
+    expect(slow.value).toBeCloseTo(fast.value, 8);
+    expect(slow.velocity).toBeCloseTo(fast.velocity, 8);
+  });
+
+  it("settles every entrance slice and skips the motion when reduced", () => {
+    for (const rank of [0, 3, 6, 99]) {
+      expect(getEntryLift(rank, 100, 8, false)).toBe(0);
+      expect(getEntryLift(rank, 100, 0.1, true)).toBe(0);
+    }
+    expect(getEntryLift(0, 7, 0.2, false)).not.toBe(getEntryLift(6, 7, 0.2, false));
+  });
+
+  it("ends selection ripples without leaving displaced neighbors", () => {
+    expect(getSelectionWave(0, -0.1)).toBe(0);
+    expect(getSelectionWave(2, 4)).toBe(0);
+    expect(Math.abs(getSelectionWave(2, 0.4))).toBeGreaterThan(0.05);
   });
 });
 
